@@ -1,0 +1,5000 @@
+diff --git a/.gitignore b/.gitignore
+index 936a102..d05ce36 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -8,3 +8,21 @@ backend/*.task
+ backend/test_h5.html
+ *.png
+ .env
++
++# 压缩包 / 备份文件
++*.zip
++*.tar.gz
++*.rar
++*.7z
++
++# 旧版备份目录
++hackathon/
++
++# IDE / 系统文件
++.idea/
++.vscode/
++*.swp
++*.swo
++*~
++.DS_Store
++Thumbs.db
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+new file mode 100644
+index 0000000..567c181
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -0,0 +1,38 @@
++# 变更日志
++
++## 2026-06-18 调试会话
++
++### [修复] 录音停不下来
++- **原因**: PyAudio 阻塞模式导致 stop_recording 无效
++- **修复**: 改用回调模式 (`stream_callback`)
++- **涉及**: `backend/pipelines/audio/recorder.py`
++
++### [修复] Thinking 页面卡死
++- **原因**: 三管线完成后没推进 step
++- **修复**: 自动 `session.step = "reviewing"`
++- **涉及**: `backend/services/pipeline_orchestrator.py`
++
++### [修复] 合影/二维码不显示
++- **原因**: Vite 没配 `/static` proxy + 路径没转 URL
++- **修复**: 加 proxy + 静态挂载 + `_path_to_url()`
++- **涉及**: `frontend/vite.config.ts`, `backend/main.py`, `backend/models/session.py`
++
++### [修复] End Early 按钮不响应
++- **原因**: `useCallback` 闭包 + 没做乐观更新
++- **修复**: 改为普通函数 + fetch 后立即跳转
++- **涉及**: `frontend/src/pages/Presenting.tsx`
++
++### [修复] session_id 不存在
++- **涉及**: `backend/models/session.py`
++
++### [修复] 录音录两遍
++- **涉及**: `backend/pipelines/audio/processor.py`
++
++### [修复] 摄像头和浏览器抢资源
++- **涉及**: `backend/pipelines/video/processor.py`, `frontend/src/pages/Presenting.tsx`
++
++### [新增] 调试日志系统
++- **涉及**: `backend/debug_utils.py`, `DEBUG_TUTORIAL.md`
++
++### [修复] 自动结束任务误触
++- **涉及**: `backend/main.py`
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 621ac41..2577459 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -3,48 +3,137 @@
+ ## 一句话
+ AI 马斯克评审亭：站到摄像头前展示黑客松项目，获得马斯克风格的硬核评审报告 + 合影。
+ 
++## 当前状态
++第二版调试完成，核心流程已跑通。代码 ~5300 行（后端 3200 + 前端 800 + 文档/配置 1300）。
++需要设 `LLM_API_KEY` 和 `IMG_GEN_API_KEY` 环境变量。
++
+ ## 技术栈
+ - 后端: Python FastAPI (单进程, 无数据库)
+-- 前端: React + Vite + TailwindCSS + Zustand
+-- STT: docker-whisper-live (faster-whisper)
+-- 视觉: Google MediaPipe FaceLandmarker
+-- TTS: Edge TTS
+-- LLM: Claude/GPT API
++- 前端: React + Vite + TailwindCSS + Zustand + Framer Motion
++- STT: faster-whisper (本地, CTranslate2)
++- 视觉: Google MediaPipe FaceLandmarker (478 点 + 52 blendshapes)
++- TTS: Edge TTS (zh-CN-YunxiNeural)
++- LLM: DeepSeek API (OpenAI 兼容格式)
++- 生图: WaveSpeedAI InfiniteYou 换脸（Polaroid 模板 + 人脸替换）
++- 合影: Pillow 合成 Polaroid 卡 / AI 生图（自动降级）
++
++## 快速启动
++
++```bash
++# 终端 1: 后端
++cd D:\hks\backend
++set LLM_API_KEY=sk-6e863dcd99a94c63a7065c43cadc4cbe
++set IMG_GEN_API_KEY=wsk_live_IkQ-6Xb8sNokbMgAzDJ6r9-tcGtWrJtOK3MwmryGgqw
++set PUBLIC_HOST=http://localhost:8000
++uvicorn main:app --host 0.0.0.0 --port 8000
++
++# 终端 2: 前端
++cd D:\hks\frontend && npm run dev
++# 浏览器打开 http://localhost:5173
++
++# 终端 3: ngrok（可选，AI 生图需要公网 URL）
++D:\ngrok\ngrok.exe http 8000
++# 设 PUBLIC_HOST 为 ngrok 地址
++```
+ 
+ ## 目录结构
+ ```
+ hks/
+-├── docker-compose.yml    # whisper-live 服务
+ ├── backend/
+-│   ├── main.py           # FastAPI 入口 + SSE + 5步状态机
+-│   ├── config.py         # 配置常量
+-│   ├── models/           # 数据模型
+-│   │   ├── session.py    # 会话状态
+-│   │   ├── review.py     # 评审 Schema
+-│   │   └── performance.py # 表现分析模型
++│   ├── main.py              # FastAPI + SSE + 5步状态机
++│   ├── config.py            # 配置常量
++│   ├── debug_utils.py       # 统一调试打印
++│   ├── models/
++│   │   ├── session.py       # BoothSession 会话状态
++│   │   ├── review.py        # 评审报告 Schema
++│   │   └── performance.py   # FluencyReport + EmotionReport
+ │   ├── pipelines/
+-│   │   ├── audio/        # 录音 + Whisper + 流畅度
+-│   │   ├── video/        # 摄像头 + MediaPipe + 情绪
+-│   │   ├── llm/          # LLM 调用 + Prompt 组装
+-│   │   ├── tts/          # Edge TTS
+-│   │   └── output/       # 合影 + QR + H5
+-│   └── services/         # 管线调度 + 降级
++│   │   ├── audio/           # recorder(回调模式) → faster-whisper → fluency
++│   │   ├── video/           # 前端帧 → FaceLandmarker → emotion
++│   │   ├── llm/             # prompt_builder → DeepSeek API → review
++│   │   ├── tts/             # Edge TTS 合成
++│   │   └── output/          # img_gen_engine + photo_composer + qr + h5
++│   ├── services/            # pipeline_orchestrator 三管线调度
++│   └── assets/              # 素材（polaroid_template.png 等）
+ ├── frontend/
+ │   └── src/
+-│       ├── pages/        # 5 步流程页面
+-│       ├── components/   # 倒计时/评审卡片/QR
+-│       ├── stores/       # Zustand 状态机
+-│       └── hooks/        # SSE 连接
+-├── PRD.md
+-├── IMPLEMENTATION.md
+-└── IMPLEMENT_PLAN.md
++│       ├── pages/           # Welcome / Presenting(Start按钮) / Thinking / Reviewing / PhotoOutput
++│       ├── components/      # Countdown / ReviewCard / QRDisplay
++│       ├── stores/          # Zustand boothStore
++│       └── hooks/           # useBoothSSE
++├── patches/                 # 补丁文件（队友协作用）
++├── CLAUDE.md / CHANGELOG.md / PROJECT_STRUCTURE.md / DEBUG_TUTORIAL.md
++└── PROMPT_ENGINEERING.md    # 提示词工程指南
+ ```
+ 
+ ## 状态机
+ welcome → presenting → thinking → reviewing → photo → complete
+ 
+-## SSE 协议
+-后端推送 /api/state SSE:
+-- step: string (当前步骤)
+-- countdown: int (倒计时秒数)
+-- data: dict (各步骤产生的数据)
++## 核心流程
++
++```
++1. Welcome（10s 倒计时）→ 自动跳转 presenting
++2. Presenting（点 Start → 录音 60s + 前端发帧 5fps）
++3. End Early / 倒计时归零 → 停止录音 → 三管线分析
++   ├─ 音频: WAV → Whisper → 流畅度
++   ├─ 视频: 前端帧 → FaceLandmarker → 情绪
++   └─ LLM: 转写+流畅度+情绪 → DeepSeek → 评审
++4. Reviewing（展示 5 段评审卡片）
++5. PhotoOutput（Polaroid 合影 + 二维码 + H5 页面）
++```
++
++## API 端点
++```
++POST /api/step/welcome                    → 重置会话
++POST /api/step/presenting/start           → 开始录音
++POST /api/step/presenting/end             → 停止录音 → 启动三管线
++POST /api/step/presenting/frame           → 接收前端视频帧
++POST /api/step/thinking/complete          → 进入评审（已废弃，自动推进）
++POST /api/step/reviewing/complete         → 完成评审 → 生成合影
++POST /api/step/photo/complete             → 完成合影
++GET  /api/health                          → 健康检查
++GET  /api/stream                          → SSE 实时推送
++```
++
++## 关键改动记录（2026-06-18）
++
++### 录音系统
++- 从 PyAudio 阻塞模式改为回调模式，支持即时停止
++- 录音时长 60s，可 End Early 提前结束
++- 录音 → 保存 → 分析管线直接使用已有文件（不重录）
++
++### 摄像头与视频
++- 去掉后端 OpenCV 录帧，改为前端 canvas 截图 → Base64 → POST 发帧
++- 前端 `getUserMedia` 做摄像头预览
++
++### LLM 评审
++- 接入 DeepSeek API（OpenAI 兼容格式）
++- 马斯克人设重写（5 思维模型 + 评审铁律 + 对抗性语气）
++- 增加 one-shot 示例锚定输出风格
++- 空转写/弱项目直接点破
++
++### 合影生成
++- AI 生图: WaveSpeedAI InfiniteYou 换脸（模板 + 人脸替换）
++- Pillow 降级: 赛博朋克 Polaroid 卡 / 二维码右下角
++- 公网 URL 通过 PUBLIC_HOST 环境变量配置
++
++### 调试系统
++- 统一调试工具 `debug_utils.py`（[STEP]/[DATA]/[ERROR] 标记）
++- 17 个后端文件加入调试输出
++- 详尽的 DEBUG_TUTORIAL.md
++
++### 修复的 Bug
++- 录音停不下来 / 录两遍 / terminate 后调用 PyAudio
++- Thinking 页面卡死（自动推进 reviewing）
++- 合影/二维码不显示（Vite proxy + 静态文件挂载）
++- End Early 按钮不响应（乐观更新跳过 SSE）
++- session_id 不存在导致 QR 崩溃
++- H5 页面数据为空（生成时 session 被重置 → 快照机制）
++
++## 环境变量
++| 变量 | 必须 | 说明 |
++|------|------|------|
++| `LLM_API_KEY` | ✅ | DeepSeek API Key |
++| `IMG_GEN_API_KEY` | ✅ | WaveSpeedAI API Key（生图/换脸） |
++| `PUBLIC_HOST` | ⚠️ AI生图需要 | ngrok 公网地址 |
++| `DEBUG` | 否 | 调试输出开关（默认开） |
+diff --git a/DEBUG_TUTORIAL.md b/DEBUG_TUTORIAL.md
+new file mode 100644
+index 0000000..f099efa
+--- /dev/null
++++ b/DEBUG_TUTORIAL.md
+@@ -0,0 +1,292 @@
++# 🍼 保姆级调试教程手册
++
++> 本文档教你如何读懂终端的调试输出，快速定位问题。
++> **关键词**: `[DEBUG]` `[STEP]` `[DATA]` `[ERROR]` — 看这些标记找问题。
++
++---
++
++## 一、调试输出格式速查
++
++启动后端后，终端会实时打印形如以下的调试信息：
++
++```
++  >>> [STEP][10:15:30.123][MAIN] === Step: welcome ===
++  [DEBUG][10:15:30.124][MAIN] 重置会话，设置 10s 倒计时
++  [DATA][10:15:30.125][MAIN] session.transcript = <None>
++  >>> !!! [ERROR][10:15:30.126][WHISPER] 音频文件不存在
++```
++
++| 前缀 | 含义 | 什么情况下看 |
++|------|------|-------------|
++| `>>> [STEP]` | **步骤切换** — 标记重要的阶段变化 | 看流程走到哪一步了 |
++| `[DEBUG]` | **常规调试** — 告诉你代码在做什么 | 看具体执行细节 |
++| `[DATA]` | **关键数据** — 显示变量值/长度/类型 | 看数据有没有传过来 |
++| `>>> !!! [ERROR]` | **错误** — 出问题了 | 看哪里崩了 |
++| `[MAIN]` | **模块标签** — 这段日志来自哪个模块 | 定位问题属于哪个环节 |
++
++### 模块标签对照表
++
++| 标签 | 模块 | 负责什么 |
++|------|------|---------|
++| `MAIN` | main.py | API 端点、SSE 推送 |
++| `ORCH` | pipeline_orchestrator.py | 三管线调度 |
++| `AUDIO` | audio/processor.py | 音频管线总控 |
++| `RECORDER` | audio/recorder.py | 麦克风录音 |
++| `WHISPER` | audio/whisper_engine.py | 语音转写 |
++| `CAMERA` | video/camera.py | 摄像头录制 |
++| `MEDIAPIPE` | video/mediapipe_engine.py | 面部检测 |
++| `EMOTION` | video/emotion_analyzer.py | 情绪提取 |
++| `PROMPT` | llm/prompt_builder.py | Prompt 组装 |
++| `LLM` | llm/llm_engine.py | LLM API 调用 |
++| `TTS` | tts/tts_engine.py | 语音合成 |
++| `PHOTO` | output/photo_composer.py | 合影合成 |
++| `QR` | output/qr_generator.py | 二维码 |
++| `H5` | output/h5_generator.py | H5 页面 |
++
++---
++
++## 二、正常流程 Debug 输出全览
++
++### 启动阶段
++```
++  >>> [STEP][MAIN] === 服务启动 ===
++  Camera opened successfully.
++  Uvicorn running on http://0.0.0.0:8000
++```
++
++### Step 1 — Welcome（重置会话）
++```
++  >>> [STEP][MAIN] === Step: welcome ===
++  [DEBUG][MAIN] 重置会话，设置 10s 倒计时
++  [DEBUG][MAIN] welcome 完成，当前 step=presenting
++```
++
++### Step 2 — Presenting/Start（录制开始）
++```
++  >>> [STEP][MAIN] === Step: presenting/start ===
++  [DEBUG][MAIN] 开始录制，倒计时=120s
++    >>> [STEP][ORCH] === 启动录制 ===
++    [DEBUG][ORCH] 开始录音（120s, 16kHz）...
++      >>> [STEP][RECORDER] 录音文件: recording_20260617_120000.wav
++    [DEBUG][RECORDER] PyAudio 初始化完成，设备数: 3
++    [DEBUG][RECORDER] 默认麦克风: Microphone (Realtek Audio)
++    [DEBUG][RECORDER] 开始录音: 120s, 共 1875 块
++    [DEBUG][RECORDER] 录音进度: 25% (468/1875 块)
++    [DEBUG][RECORDER] 录音进度: 50% (937/1875 块)
++    [DEBUG][RECORDER] 录音进度: 75% (1406/1875 块)
++    [DEBUG][ORCH] 录音完成，耗时 120.5s
++    [DEBUG][ORCH] 文件: xxx.wav (1.9 MB)
++```
++
++### Step 3 — Presenting/End（录制完成 → 分析）
++```
++  >>> [STEP][MAIN] === Step: presenting/end ===
++    >>> [STEP][ORCH] === 开始分析 ===
++    [DEBUG][ORCH] 三管线并行启动...
++      >>> [STEP][ORCH] --- 音频管线启动 ---
++      >>> [STEP][ORCH] --- 视频管线启动 ---
++      >>> [STEP][ORCH] --- LLM 管线启动 ---
++```
++
++### 音频管线过程
++```
++  >>> [STEP][AUDIO] >> 录音阶段
++  [DEBUG][AUDIO] 录音完成，耗时 0.1s
++    >>> [STEP][AUDIO] >> Whisper 转写阶段
++  [DEBUG][WHISPER] 检测语言: zh, 概率: 0.95
++  [DEBUG][WHISPER] 转写完成: 25 个片段, 总字符数 342
++  [DATA][AUDIO] 转写文本 = '我们这个项目是...' (len=342)
++    >>> [STEP][AUDIO] >> 流畅度分析阶段
++  [DATA][AUDIO] 流畅度指标 = {14 keys}
++    >>> [STEP][AUDIO] === 音频管线完成 ===
++```
++
++### 视频管线过程
++```
++  >>> [STEP][CAMERA] 摄像头录制: 120s, 5fps, 预期 600 帧
++  [DEBUG][CAMERA] 录制进度: 25% (150/600 帧)
++  [DEBUG][CAMERA] 录制进度: 50% (300/600 帧)
++  [DEBUG][CAMERA] 录制进度: 75% (450/600 帧)
++    >>> [STEP][CAMERA] 录制完成: 实际 600 帧
++    >>> [STEP][VIDEO] >> FaceLandmarker 初始化
++  [DEBUG][VIDEO] FaceLandmarker 就绪
++    >>> [STEP][VIDEO] >> 逐帧面部检测 (600 帧)
++  [DEBUG][VIDEO] 面部检测进度: 30/600 帧 (检测到脸部: 28)
++  [DEBUG][VIDEO] 面部检测率: 580/600 (97%)
++    >>> [STEP][VIDEO] >> 情绪指标提取
++  [DATA][VIDEO] 情绪信号 = {8 keys}
++    >>> [STEP][VIDEO] === 视频管线完成 ===
++```
++
++### LLM 管线过程
++```
++  >>> [STEP][PROMPT] === 组装 LLM Prompt ===
++  [DATA][PROMPT] transcript 前100字 = '我们这个项目是...'
++  [DATA][PROMPT] fluency_report 是否存在 = True
++  [DATA][PROMPT] emotion_report 是否存在 = True
++    >>> [STEP][LLM] === 评审生成 ===
++  [DEBUG][LLM] API URL: https://api.deepseek.com/v1/chat/completions
++  [DEBUG][LLM] Model: deepseek-chat
++    >>> [STEP][LLM] >> API 调用第 1/3 次尝试
++  [DEBUG][LLM] HTTP 响应: status=200, 耗时 3.2s
++  [DEBUG][LLM] finish_reason=stop
++  [DEBUG][LLM] 响应内容长度: 420 字符
++    >>> [STEP][LLM] 评审 JSON 验证通过
++```
++
++### Step 4 — Thinking → Reviewing → Photo
++```
++  >>> [STEP][MAIN] === Step: thinking/complete ===
++  [DATA][MAIN] session.transcript = '...' (len=342)
++  [DATA][MAIN] session.fluency_report = {14 keys}
++  [DATA][MAIN] session.emotion_report = {8 keys}
++  [DATA][MAIN] session.review = {5 keys}
++  [DATA][MAIN] session.error = <None>
++
++  >>> [STEP][ORCH] === 输出生成 ===
++    >>> [STEP][PHOTO] === 合影合成 ===
++  [DEBUG][PHOTO] 原始图片尺寸: (1280, 720)
++    >>> [STEP][PHOTO] 合影合成完成，耗时 0.3s
++    >>> [STEP][QR] === 二维码生成 ===
++    >>> [STEP][QR] 二维码生成完成，耗时 0.1s
++    >>> [STEP][H5] === H5 页面生成 ===
++    >>> [STEP][H5] H5 页面生成完成，耗时 0.05s
++
++  >>> [STEP][MAIN] === Step: photo/complete ===
++  [DEBUG][MAIN] 会话完成，photo_path=xxx.jpg, qr_path=xxx.png
++```
++
++---
++
++## 三、常见问题排查指南（看 Debug 输出找问题）
++
++### 🔴 问题 1：录音没声音 → transcript 很短/全空白
++
++```
++  [DEBUG][WHISPER] 转写完成: 3 个片段, 总字符数 12
++  [DATA][AUDIO] 转写文本 = '嗯 嗯 嗯' (len=5)    ← 只录到噪音
++```
++
++**解决：** 检查麦克风是否静音，Windows 麦克风权限是否开启
++
++---
++
++### 🔴 问题 2：Whisper 转写失败
++
++```
++  >>> !!! [ERROR][WHISPER] faster-whisper 转写失败
++  >>> !!! [ERROR][WHISPER] openai-whisper 也未安装
++```
++
++**解决：** `pip install faster-whisper` 或 `pip install openai-whisper`
++
++---
++
++### 🔴 问题 3：摄像头没画面
++
++```
++  [DEBUG][CAMERA] 录制进度: 25% (150/600 帧)
++  [DEBUG][VIDEO] 面部检测进度: 30/600 帧 (检测到脸部: 0)    ← 没检测到脸
++```
++
++**解决：** 检查 `CAMERA_INDEX`（0/1/2），确保光线充足、面部正对镜头
++
++---
++
++### 🔴 问题 4：LLM 返回 fallback 评审
++
++```
++  >>> !!! [ERROR][LLM] LLM_API_KEY 未设置，使用 fallback 评审
++```
++
++**或：**
++```
++  >>> !!! [ERROR][LLM] API 调用异常: 401 Client Error    ← Key 不对
++  >>> !!! [ERROR][LLM] API 调用异常: ConnectError        ← 网络不通
++```
++
++**解决：** `set LLM_API_KEY=sk-xxx` 后重启，检查网络
++
++---
++
++### 🔴 问题 5：SSE 前端不更新
++
++```
++  [DEBUG][MAIN] SSE 客户端连接，当前队列数: 1      ← 前端连上了
++  ...
++  [DEBUG][MAIN] SSE 客户端断开，剩余队列: 0        ← 断开了
++```
++
++**解决：** 刷新页面，检查浏览器控制台有无 CORS 错误
++
++---
++
++### 🔴 问题 6：合影是纯色/黑屏
++
++```
++  [DEBUG][PHOTO] 输入图片: None                     ← 没有摄像头照片！
++```
++
++**解决：** 确保视频管线运行正常，检查 CAMERA_INDEX
++
++---
++
++### 🔴 问题 7：模块 ImportError
++
++```
++  >>> !!! [ERROR][AUDIO] 模块缺失: No module named 'pyaudio'
++  >>> !!! [ERROR][VIDEO] 模块缺失: No module named 'mediapipe'
++```
++
++**解决：** `pip install pyaudio mediapipe faster-whisper edge-tts qrcode[pil] httpx`
++
++---
++
++## 四、快速诊断流程图
++
++```
++终端输出 → [STEP] 到哪一步了？
++  ├─ welcome → ✅
++  ├─ presenting/start → 看 RECORDER 日志
++  │   ├─ 有录音进度 → 麦克风 ✅
++  │   └─ 无进度/报错 → 检查 pyaudio + 麦克风
++  ├─ thinking → 看三管线
++  │   ├─ AUDIO → 有转写文本？✅/❌
++  │   ├─ VIDEO → 面部检测率>50%？✅/❌
++  │   └─ LLM →  有 review？✅/fallback？❌
++  ├─ reviewing → review 有值？✅/❌
++  └─ photo → 看 PHOTO/QR/H5 日志
++```
++
++---
++
++## 五、快速自检
++
++```bash
++# 检查 LLM API Key
++echo %LLM_API_KEY%
++
++# 检查摄像头
++python -c "import cv2; cap=cv2.VideoCapture(0); print(cap.isOpened())"
++
++# 检查麦克风
++python -c "import pyaudio; p=pyaudio.PyAudio(); print(p.get_device_count())"
++
++# 启动后端（开 DEBUG）
++set DEBUG=1
++uvicorn main:app --host 0.0.0.0 --port 8000
++```
++
++---
++
++## 六、关掉调试输出
++
++```bash
++set DEBUG=0    # Windows CMD 启动前设置
++```
++
++---
++
++## 七、还没找到问题？
++
++把终端的完整 `[STEP]` / `[DATA]` / `[ERROR]` 日志贴给我，截图也行，帮你定位。
+diff --git a/MAIN_DEBUG.md b/MAIN_DEBUG.md
+new file mode 100644
+index 0000000..797f45c
+--- /dev/null
++++ b/MAIN_DEBUG.md
+@@ -0,0 +1,121 @@
++# 主干调试操作手册
++
++> **目标**: 三个人一台机，一次走通全流程
++> **预估时间**: 30 分钟
++> **环境**: Windows + 摄像头 + 麦克风 + 大屏幕
++
++---
++
++## Step 0：清理环境（A 执行）
++
++```bash
++taskkill /f /im python.exe 2>nul
++taskkill /f /im uvicorn.exe 2>nul
++taskkill /f /im node.exe 2>nul
++netstat -ano | findstr ":8000" || echo "8000 空闲"
++netstat -ano | findstr ":5173" || echo "5173 空闲"
++```
++
++---
++
++## Step 1：安装依赖（A 执行，B+C 确认无报错）
++
++```bash
++cd D:\hks\backend && pip install -r requirements.txt
++cd D:\hks\frontend && npm install
++```
++
++三人确认日志末尾**没有 ERROR/FAILED**。
++
++---
++
++## Step 2：启动后端（A 执行）
++
++```bash
++set LLM_API_KEY=sk-6e863dcd99a94c63a7065c43cadc4cbe
++cd D:\hks\backend
++uvicorn main:app --host 0.0.0.0 --port 8000
++```
++
++**确认看到：**
++```
++Camera opened successfully.
++Uvicorn running on http://0.0.0.0:8000
++```
++
++---
++
++## Step 3：启动前端（C 执行，另开终端）
++
++```bash
++cd D:\hks\frontend
++npm run dev
++```
++
++浏览器打开 `http://localhost:5173` → **黑底白字"欢迎来到 X.AI 临时评审室"**
++
++---
++
++## Step 4：测后端连通性（C 在浏览器执行）
++
++```
++http://localhost:8000/api/health
++```
++
++**预期：** `{"status":"ok"}`
++
++---
++
++## Step 5：走 5 步流程（三个人一起盯屏幕）
++
++| 操作者 | 执行命令 | 屏幕预期 |
++|--------|---------|---------|
++| C | 打开浏览器 | 欢迎页 + 10s 倒计时 |
++| A | `curl -X POST localhost:8000/api/step/welcome` | 重置 |
++| A | `curl -X POST localhost:8000/api/step/presenting/start` | 路演页 120s 倒计时 |
++| 全员 | *等待 5 秒* | — |
++| A | `curl -X POST localhost:8000/api/step/presenting/end` | 思考动画页 |
++| 全员 | *等待 30-60 秒（管线并行）* | 思考动画 |
++| A | `curl -X POST localhost:8000/api/step/thinking/complete` | 评审宣读页 |
++| A | `curl -X POST localhost:8000/api/step/reviewing/complete` | 合影二维码页 |
++| A | `curl -X POST localhost:8000/api/step/photo/complete` | 完成页 |
++
++---
++
++## Step 6：验证管线数据（A 执行）
++
++```bash
++curl -s http://localhost:8000/api/stream | head -5
++```
++
++检查 JSON 中 data 字段：
++
++| 字段 | 应该有值 | 含义 |
++|------|---------|------|
++| `data.transcript` | 路演转写文本 | Whisper 转写成功 |
++| `data.fluency` | WPM / pause_count | 流畅度分析成功 |
++| `data.emotion` | tension_index / smile_index | 情绪提取成功 |
++| `data.review` | insight / highlights | LLM 评审成功 |
++
++---
++
++## 排查对照表
++
++| 现象 | 问题 | 谁负责 |
++|------|------|--------|
++| `transcript` 为 null | Whisper 模型未下载 / 麦克风没声音 | **A** |
++| `emotion` 为 null | MediaPipe 人脸检测失败 | **B** |
++| `review` 为 fallback | LLM_API_KEY 未设 | **A** |
++| 前端白屏 | Vite 未启动 / proxy 不对 | **C** |
++| 摄像头红灯不亮 | index 不对 / 驱动 | **B** |
++
++---
++
++## 常见问题速查
++
++| 问题 | 解决 |
++|------|------|
++| faster-whisper 首次加载慢 | ~20s 正常 |
++| LLM 返回占位评审 | `set LLM_API_KEY=sk-xxx` 后重启 |
++| 摄像头读不到 | 改 `config.py` 中 `CAMERA_INDEX` |
++| 端口被占用 | `taskkill /f /im python.exe` 重试 |
+diff --git a/PROJECT_STRUCTURE.md b/PROJECT_STRUCTURE.md
+new file mode 100644
+index 0000000..1c53676
+--- /dev/null
++++ b/PROJECT_STRUCTURE.md
+@@ -0,0 +1,198 @@
++# 项目结构总览
++
++```
++hks/
++├── backend/              ← Python FastAPI 后端
++├── frontend/             ← React + Vite 前端
++├── hackathon/            ← 旧版备份（可忽略）
++├── .claude/              ← Claude 配置
++├── .git/                 ← Git 仓库
++│
++├── CLAUDE.md             ← 项目上下文（给 AI 看的）
++├── PRD.md                ← 产品需求文档
++├── IMPLEMENTATION.md     ← 技术实现方案
++├── IMPLEMENT_PLAN.md     ← 多 Agent 执行计划
++├── DEBUG_PLAN.md         ← 三人分工调试手册
++├── MAIN_DEBUG.md         ← 主干调试操作手册
++├── DEBUG_TUTORIAL.md     ← 保姆级调试教程
++├── PROJECT_STRUCTURE.md  ← 本文件
++├── SESSION_SUMMARY.md    ← 开发过程记录
++├── docker-compose.yml    ← （废弃，已改用本地 faster-whisper）
++└── .gitignore
++```
++
++---
++
++## backend/ — 后端（Python FastAPI）
++
++```
++backend/
++├── main.py               ← HTTP 入口 + SSE 推送 + 5 步状态机
++├── config.py             ← 配置常量（API Key、时长、摄像头索引）
++├── debug_utils.py        ← 统一调试打印工具
++├── requirements.txt      ← Python 依赖
++│
++├── models/               ← 数据模型
++│   ├── session.py        ← BoothSession 会话状态（含 to_sse()）
++│   ├── review.py         ← ReviewReport 评审报告结构
++│   └── performance.py    ← FluencyReport + EmotionReport
++│
++├── pipelines/            ← 5 条数据处理管线
++│   ├── audio/            ← 音频管线
++│   │   ├── recorder.py         ← PyAudio 录音（回调模式，支持即时停止）
++│   │   ├── whisper_engine.js   ← faster-whisper 语音转写
++│   │   ├── fluency_analyzer.py ← 流畅度分析（WPM/停顿/口头禅/磕巴）
++│   │   └── processor.py        ← 音频管线编排
++│   │
++│   ├── video/            ← 视频管线
++│   │   ├── camera.py           ← OpenCV 摄像头封装（当前未使用，保留备用）
++│   │   ├── mediapipe_engine.py ← FaceLandmarker 面部检测（478点+52 blendshapes）
++│   │   ├── emotion_analyzer.py ← 情绪提取（紧张/微笑/看镜头/头部稳定）
++│   │   └── processor.py        ← 视频管线编排（解码前端 Base64 帧）
++│   │
++│   ├── llm/              ← LLM 评审管线
++│   │   ├── llm_engine.py       ← DeepSeek API 调用（重试3次+fallback）
++│   │   ├── prompt_builder.py   ← 组装 Prompt（转写+流畅度+情绪）
++│   │   └── persona.py          ← 马斯克角色定义 + 输出 JSON Schema
++│   │
++│   ├── tts/              ← 语音合成
++│   │   └── tts_engine.py       ← Edge TTS 合成（zh-CN-YunxiNeural）
++│   │
++│   └── output/           ← 输出生成
++│       ├── photo_composer.js   ← 合影合成（Pillow，叠加签名+logo+结语）
++│       ├── qr_generator.py     ← 二维码生成（qrcode 库）
++│       └── h5_generator.py     ← H5 评审报告页面（单页 HTML）
++│
++├── services/             ← 业务服务
++│   ├── pipeline_orchestrator.py ← 三管线调度器（录制→分析→输出）
++│   ├── signal_quality.py       ← 信号质量评估
++│   └── degradation.py          ← 降级策略
++│
++├── data/                 ← 运行时数据（.gitignore）
++│   ├── audio/            ← 录音 WAV 文件
++│   ├── photos/           ← 合影 JPG 文件
++│   ├── qr/               ← 二维码 PNG 文件
++│   └── h5/               ← H5 HTML 文件
++│
++└── assets/               ← 素材
++    ├── musk_signature.png
++    └── event_logo.png
++```
++
++### 后端核心流程
++
++```
++main.py（接收 HTTP）
++  │
++  ▼
++orchestrator（调度）
++  ├── 音频管线 → recorder → whisper_engine → fluency_analyzer
++  ├── 视频管线 → 前端帧 → mediapipe_engine → emotion_analyzer
++  └── LLM 管线 → prompt_builder → llm_engine → review
++  │
++  ▼
++输出管线 → photo_composer + qr_generator + h5_generator
++  │
++  ▼
++SSE 推送给前端
++```
++
++---
++
++## frontend/ — 前端（React + Vite + TailwindCSS）
++
++```
++frontend/
++├── vite.config.ts         ← Vite 配置（代理 /api + /static 到后端）
++├── tsconfig.json          ← TypeScript 配置
++├── package.json           ← npm 依赖
++│
++└── src/
++    ├── main.tsx           ← React 入口
++    ├── App.tsx            ← 根组件（按 step 切换 5 个页面）
++    ├── index.css          ← TailwindCSS
++    │
++    ├── pages/             ← 5 个页面 = 5 步状态机
++    │   ├── Welcome.tsx        ← 欢迎页 + 10s 倒计时
++    │   ├── Presenting.tsx     ← Start→录音+发帧+摄像头+倒计时→End Early
++    │   ├── Thinking.tsx       ← 分析中动画（自动跳转）
++    │   ├── Reviewing.tsx      ← 5 段评审卡片
++    │   └── PhotoOutput.tsx    ← 合影 + 二维码
++    │
++    ├── components/        ← 共享组件
++    │   ├── Countdown.tsx      ← 倒计时动画（最后 10s 变红）
++    │   ├── ReviewCard.tsx     ← 评审卡片（insight/list/quote 三种样式）
++    │   └── QRDisplay.tsx      ← 二维码展示 + 扫码提示
++    │
++    ├── stores/            ← 状态管理
++    │   └── boothStore.ts      ← Zustand（step + data + updateFromSSE）
++    │
++    └── hooks/             ← 自定义 Hooks
++        └── useBoothSSE.ts     ← SSE EventSource 连接 + 3s 自动重连
++```
++
++### 前端页面跳转
++
++```
++Welcome（倒计时 10s）
++  │ SSE 推送 step=presenting
++  ▼
++Presenting（Start 按钮 → 录音+发帧+60s 倒计时）
++  │ End Early / 倒计时归零
++  ▼
++Thinking（"Analyzing with first principles..."）← 自动跳转
++  │ 三管线完成 → 自动 step=reviewing
++  ▼
++Reviewing（5 段评审卡片）
++  │ Continue to Photo
++  ▼
++PhotoOutput（合影 + 二维码 + H5）
++  │ Start Again（页面重载）
++  ▼
++Welcome ...
++```
++
++---
++
++## 状态机与数据流
++
++```
++Step       前端显示        后端处理             数据
++──────     ────────       ────────           ────
++welcome   欢迎页 10s     重置会话              -
++presenting 录音+摄像头    录音 60s + 收帧     WAV + frames
++thinking  分析动画        三管线并行分析       fluency/emotion/review
++reviewing 评审卡片        -                   评审数据已就绪
++photo     合影+二维码    生成合影/QR/H5       photo/qr 路径
++complete  同 photo        -                   -
++```
++
++### 数据采集方式
++
++| 数据 | 来源 | 采集方式 |
++|------|------|---------|
++| 音频 | PyAudio 麦克风 | 后端回调模式录制 60s |
++| 视频帧 | 浏览器摄像头 | 前端 canvas 截图 → Base64 JPEG → POST 到后端 |
++| 情绪 | 视频帧 → MediaPipe | FaceLandmarker 478 点 + 52 blendshapes |
++| 评审 | DeepSeek API | 转写文本 + 流畅度 + 情绪 → LLM 生成 |
++
++---
++
++## 关键配置（backend/config.py）
++
++| 配置 | 默认值 | 说明 |
++|------|--------|------|
++| `LLM_API_KEY` | 环境变量 | DeepSeek API Key |
++| `LLM_API_URL` | `https://api.deepseek.com/v1/chat/completions` | API 地址 |
++| `LLM_MODEL` | `deepseek-chat` | 模型名 |
++| `EDGE_TTS_VOICE` | `zh-CN-YunxiNeural` | TTS 语音 |
++| `CAMERA_INDEX` | 0 | 摄像头索引（当前未使用） |
++| `AUDIO_DURATION` | 60 | 录音最长秒数 |
++| `VIDEO_FPS` | 5 | 帧率 |
++| `DEBUG_MODE` | True（环境变量 `DEBUG=1`） | 调试输出开关 |
++
++---
++
++## 旧版备份（hackathon/ 目录）
++
++`hackathon/hackathon/` 和 `hackathon/hackathon/hks/` 是之前打包分发的旧版本，**当前开发以根目录 `hks/` 为准**，旧版可删除。
+diff --git a/PROMPT_ENGINEERING.md b/PROMPT_ENGINEERING.md
+new file mode 100644
+index 0000000..6ab0d26
+--- /dev/null
++++ b/PROMPT_ENGINEERING.md
+@@ -0,0 +1,180 @@
++# 提示词工程指南
++
++> 给负责 LLM 评审内容的同学。
++> 你只需要懂提示词工程，不需要懂管线/调度/音视频代码。
++
++---
++
++## 你要改的只有 2 个文件
++
++```
++backend/pipelines/llm/
++├── persona.py          ← 马斯克人设 + 输出格式（改这个）
++└── prompt_builder.py   ← Prompt 组装逻辑（改里面的模板文本）
++```
++
++---
++
++## 最终发给 LLM 的消息结构
++
++```
++messages = [
++  {"role": "system", "content": MUSK_SYSTEM_PROMPT},   ← persona.py
++  {"role": "user",   "content": prompt_text}             ← prompt_builder.py
++]
++```
++
++用的是 DeepSeek API（OpenAI 兼容格式），模型 `deepseek-chat`。
++
++---
++
++## 一、System Prompt（persona.py）
++
++### MUSK_SYSTEM_PROMPT — 马斯克人设
++
++```python
++MUSK_SYSTEM_PROMPT = """你是埃隆·马斯克——特斯拉、SpaceX、xAI 的CEO。
++现在你坐在黑客松评审亭里，刚看完一位参赛者 2 分钟的项目路演。
++你不是来鼓励的，你是用第一性原理把这个项目拆开、看它到底成不成立的。
++
++# 你的思维模型（评审时真的用，而不是嘴上说）
++1. 渐近极限 + 笨蛋指数：先想这东西的理论/物理极限在哪，再看现实差多少。
++2. 算法五步：质疑需求 → 删掉 → 简化 → 加速 → 自动化
++3. 生存级锚定：这东西若成了，能把效率提升 10 倍吗？
++4. 垂直整合即物理：你的护城河在哪？
++5. 快速迭代 > 完美规划：做出来的比规划的重要一百倍
++
++# 评审铁律
++- 必问：有用吗？谁用？谁付钱？
++- 必看：真正动手做的是什么？别讲愿景
++- 必拆：抛开现成方案，从物理层面看问题本质
++
++# 语言风格
++- 短句，结论先行
++- 直接、不委婉、带对抗性
++- 工程师黑话，偶尔黑色幽默
++- 一针见血，但点到为止
++
++# 用好表现数据（当弹药用）
++- 卡顿/紧张 → 点破他自己也没想透
++- 流畅但内容空 → "话术很顺，没听到工程"
++- 自信且内容扎实 → 给真实认可
++
++# 禁止
++- 禁止 AI 味、客气、泛泛而谈
++- 禁止只夸不挑或为黑而黑
++- 亮点必须具体到技术细节
++"""
++```
++
++### REVIEW_OUTPUT_SCHEMA — 输出格式
++
++```python
++REVIEW_OUTPUT_SCHEMA = """只输出 JSON，不要 markdown 代码块：
++{
++  "insight": "一句话洞察（≤25字，要狠要准）",
++  "highlights": ["亮点1（具体到技术/工程）", "亮点2", "亮点3（可选）"],
++  "sharp_question": "1个尖锐的第一性原理问题",
++  "suggestions": ["硬核建议1", "建议2（可选）"],
++  "closing": "一句结语，马斯克风格的挑战或认可"
++}
++"""
++```
++
++### MUSK_QUOTES — 签名金句库
++
++```python
++MUSK_QUOTES = [
++    "当某件事足够重要，即使胜算不大，也该去做。",
++    "失败是一种选项。如果什么都没失败，说明你不够创新。",
++    "把问题拆到物理层面，剩下的只是工程。",
++    "最好的零件，是不存在的零件。",
++    "原型很容易，量产是地狱。",
++    "第一步，是确认这件事在物理上可能。",
++    "别优化一个本就不该存在的东西。",
++    "如果你需要别人鼓励才肯做，那就别做了。",
++]
++```
++
++---
++
++## 二、User Prompt（prompt_builder.py）
++
++### 注入到模板的变量
++
++| 变量 | 说明 | 示例 |
++|------|------|------|
++| `{transcript}` | Whisper 语音转写全文 | "我们这个项目是做..." |
++| `{fluency_summary}` | 流畅度分析文本 | "平均语速: 142 词/分钟..." |
++| `{emotion_summary}` | 情绪分析文本 | "紧张指数: 0.35..." |
++| `{REVIEW_EXAMPLE}` | One-shot 示例（硬编码） | 外卖派单评审 |
++| `{REVIEW_OUTPUT_SCHEMA}` | 输出格式说明 | 见上 |
++
++### 当前模板文本
++
++```
++以下是黑客松参赛者的项目介绍（语音转写文本）：
++{transcript}
++
++---
++
++以下是该参赛者在路演过程中的表现分析（请把它当评审弹药，在能支撑判断时引用一次，别堆数据）：
++
++【演讲流畅度】
++{fluency_summary}
++
++【情绪与自信度】
++{emotion_summary}
++
++---
++
++{REVIEW_EXAMPLE}
++
++---
++
++{REVIEW_OUTPUT_SCHEMA}
++
++要求：
++- 用马斯克的口吻：短句、结论先行、对抗性、可带黑色幽默；不要客气的 AI 味。
++- 亮点必须具体到技术/工程细节；尖锐问题要直击"这项目能不能成立"。
++- 若转写文本几乎为空或听不出在做什么，就直接在 insight 里点破"我没听到任何工程"，不要编造亮点。
++- 只输出 JSON，全中文，insight ≤ 25 字。
++```
++
++### One-shot 示例
++
++```json
++{
++  "insight": "你在给一个已经解决的问题，造第三个轮子。",
++  "highlights": ["真接了实时路况 API，不是写死的假数据", "自己实现了贪心+模拟退火调度"],
++  "sharp_question": "美团饿了么迭代了十年，你凭什么更优？1万单还跑得动吗？",
++  "suggestions": ["找垂直场景（园区、医院送检）", "用可解释规则+局部搜索替代模拟退火"],
++  "closing": "技术不差，方向危险。换个战场，继续干。"
++}
++```
++
++---
++
++## 三、改了怎么测试
++
++你不需要在 Mac 上跑项目（音视频硬件依赖 Windows），改完把文件发回来就行：
++
++```bash
++# 方案 A：直接把两个 .py 文件发回来替换
++# 方案 B：生成补丁文件
++diff -u backend/pipelines/llm/persona.py backend/pipelines/llm/persona.py > my_patch.patch
++```
++
++我们在 Windows 上重启后端就能看到效果：
++```bash
++uvicorn main:app --host 0.0.0.0 --port 8000
++```
++
++---
++
++## 四、你不能改的部分
++
++- `_build_fluency_summary()` / `_build_emotion_summary()` — 数据格式化函数
++- `build_prompt()` 的函数逻辑 — 只改里面的 `prompt_text` 字符串
++- `llm_engine.py` — HTTP 调用、重试、解析、fallback（不用碰）
++- 所有管线代码、前端代码 — 不用碰
+diff --git a/backend/config.py b/backend/config.py
+index 03db379..5a114dd 100644
+--- a/backend/config.py
++++ b/backend/config.py
+@@ -1,5 +1,8 @@
+ import os
+ 
++# 调试模式（设为 "0" 关闭详细调试输出）
++DEBUG_MODE = os.getenv("DEBUG", "1") == "1"
++
+ # LLM API (DeepSeek / OpenAI 兼容格式)
+ LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+ LLM_API_URL = os.getenv("LLM_API_URL", "https://api.deepseek.com/v1/chat/completions")
+@@ -13,10 +16,16 @@ CAMERA_INDEX = 0
+ 
+ # Audio
+ AUDIO_SAMPLE_RATE = 16000
+-AUDIO_DURATION = 120  # seconds
++AUDIO_DURATION = 60  # seconds（最长录音时长）
+ 
+ # Video
+ VIDEO_FPS = 5
+ FRAME_INTERVAL = 1.0 / VIDEO_FPS
+ PHOTO_RESOLUTION = (3840, 2160)
+ ANALYSIS_RESOLUTION = (1280, 720)
++
++# AI 生图（合影 Polaroid 卡）
++IMG_GEN_API_KEY = os.getenv("IMG_GEN_API_KEY", "")     # WaveSpeedAI API Key
++IMG_GEN_API_BASE = os.getenv("IMG_GEN_API_BASE", "https://api.wavespeed.ai/api/v3")
++IMG_GEN_MODEL = os.getenv("IMG_GEN_MODEL", "wavespeed-ai/flux-krea-dev-lora")
++IMG_GEN_ENABLED = bool(IMG_GEN_API_KEY)                 # 有 Key 才启用
+diff --git a/backend/debug_utils.py b/backend/debug_utils.py
+new file mode 100644
+index 0000000..27c7820
+--- /dev/null
++++ b/backend/debug_utils.py
+@@ -0,0 +1,72 @@
++"""
++调试工具模块 — 提供统一的调试打印接口。
++
++所有模块用此模块的 print_debug / print_step / print_data / print_error
++替代裸 print，保证格式统一，且可通过 DEBUG_MODE 一键开关。
++"""
++
++import datetime
++import os
++import sys
++
++# 是否开启调试输出（默认打开，可在 config.py 中统一关闭）
++DEBUG_MODE = os.getenv("DEBUG", "1") == "1"
++
++
++def _timestamp() -> str:
++    return datetime.datetime.now().strftime("%H:%M:%S.%f")[:12]
++
++
++def print_debug(tag: str, msg: str):
++    """常规调试信息。"""
++    if not DEBUG_MODE:
++        return
++    print(f"  [DEBUG][{_timestamp()}][{tag}] {msg}", flush=True)
++
++
++def print_step(tag: str, msg: str):
++    """步骤级信息 — 用 >>> 突出显示。"""
++    if not DEBUG_MODE:
++        return
++    print(f"\n  >>> [STEP][{_timestamp()}][{tag}] {msg}", flush=True)
++
++
++def print_data(tag: str, label: str, data):
++    """打印关键数据（自动处理 None/空/长度）。"""
++    if not DEBUG_MODE:
++        return
++    if data is None:
++        print(f"  [DATA][{_timestamp()}][{tag}] {label} = <None>", flush=True)
++    elif isinstance(data, str):
++        snippet = data[:120].replace("\n", "\\n")
++        print(f"  [DATA][{_timestamp()}][{tag}] {label} = '{snippet}' (len={len(data)})", flush=True)
++    elif isinstance(data, list):
++        print(f"  [DATA][{_timestamp()}][{tag}] {label} = [{len(data)} items]", flush=True)
++    elif isinstance(data, dict):
++        print(f"  [DATA][{_timestamp()}][{tag}] {label} = {{{len(data)} keys}} {list(data.keys())}", flush=True)
++    else:
++        print(f"  [DATA][{_timestamp()}][{tag}] {label} = {data}", flush=True)
++
++
++def print_error(tag: str, msg: str):
++    """错误信息 — 用 !!! 突出。"""
++    if not DEBUG_MODE:
++        return
++    print(f"  >>> !!! [ERROR][{_timestamp()}][{tag}] {msg}", flush=True)
++
++
++def print_file_size(tag: str, path: str):
++    """打印文件大小。"""
++    if not DEBUG_MODE:
++        return
++    try:
++        size = os.path.getsize(path)
++        if size < 1024:
++            size_str = f"{size} B"
++        elif size < 1024 * 1024:
++            size_str = f"{size / 1024:.1f} KB"
++        else:
++            size_str = f"{size / 1024 / 1024:.1f} MB"
++        print(f"  [DEBUG][{_timestamp()}][{tag}] 文件: {path} ({size_str})", flush=True)
++    except OSError:
++        print(f"  [DEBUG][{_timestamp()}][{tag}] 文件不存在: {path}", flush=True)
+diff --git a/backend/main.py b/backend/main.py
+index f143661..96b3a96 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -4,17 +4,20 @@ from contextlib import asynccontextmanager
+ 
+ from fastapi import FastAPI, HTTPException, Request
+ from fastapi.middleware.cors import CORSMiddleware
++from fastapi.staticfiles import StaticFiles
+ from sse_starlette.sse import EventSourceResponse
+ 
+ from config import AUDIO_DURATION, CAMERA_INDEX
+ from models.session import BoothSession
+ from services.pipeline_orchestrator import PipelineOrchestrator
++from debug_utils import print_debug, print_step, print_data, print_error
+ 
+ # ---------------------------------------------------------------------------
+ # Global state (single-session, in-process singleton)
+ # ---------------------------------------------------------------------------
+ session = BoothSession()
+ sse_queues: list[asyncio.Queue] = []
++_auto_end_task: asyncio.Task | None = None  # 自动结束任务，welcome/reset 时取消
+ 
+ 
+ async def broadcast_state() -> None:
+@@ -46,6 +49,7 @@ orchestrator = PipelineOrchestrator(session, notify=_notify)
+ @asynccontextmanager
+ async def lifespan(_app: FastAPI):
+     """Startup: attempt camera init. Shutdown: log."""
++    print_step("MAIN", "=== 服务启动 ===")
+     print(f"Initialising camera at index {CAMERA_INDEX}...")
+     try:
+         import cv2
+@@ -61,7 +65,7 @@ async def lifespan(_app: FastAPI):
+     except Exception as exc:
+         print(f"Camera init warning: {exc}")
+     yield
+-    print("Backend shutting down.")
++    print_step("MAIN", "=== 服务关闭 ===")
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -69,6 +73,14 @@ async def lifespan(_app: FastAPI):
+ # ---------------------------------------------------------------------------
+ app = FastAPI(title="Legendary Review Booth", lifespan=lifespan)
+ 
++# 挂载静态文件目录，供前端访问合影和二维码
++import os
++_static_dir = os.path.join(os.path.dirname(__file__), "data")
++os.makedirs(os.path.join(_static_dir, "photos"), exist_ok=True)
++os.makedirs(os.path.join(_static_dir, "qr"), exist_ok=True)
++os.makedirs(os.path.join(_static_dir, "h5"), exist_ok=True)
++app.mount("/static", StaticFiles(directory=_static_dir), name="static")
++
+ app.add_middleware(
+     CORSMiddleware,
+     allow_origins=["http://localhost:5173"],
+@@ -95,6 +107,7 @@ def _require_step(expected: str) -> None:
+ # ---------------------------------------------------------------------------
+ @app.get("/api/health")
+ async def health():
++    print_debug("MAIN", "健康检查 GET /api/health")
+     return {"status": "ok"}
+ 
+ 
+@@ -105,18 +118,23 @@ async def health():
+ async def stream(request: Request):
+     queue: asyncio.Queue = asyncio.Queue()
+     sse_queues.append(queue)
++    print_debug("MAIN", f"SSE 客户端连接，当前队列数: {len(sse_queues)}")
+ 
+     async def event_generator():
+         try:
+             # Send current state immediately on connect
++            data = session.to_sse()
++            print_debug("MAIN", f"SSE 发送初始状态: step={data.get('step')}")
+             yield {
+                 "event": "message",
+-                "data": json.dumps(session.to_sse(), ensure_ascii=False),
++                "data": json.dumps(data, ensure_ascii=False),
+             }
+ 
+             while True:
+                 try:
+                     data = await asyncio.wait_for(queue.get(), timeout=30.0)
++                    step = data.get("step") if isinstance(data, dict) else "?"
++                    print_debug("MAIN", f"SSE 推送状态: step={step}")
+                     yield {
+                         "event": "message",
+                         "data": json.dumps(data, ensure_ascii=False),
+@@ -128,10 +146,11 @@ async def stream(request: Request):
+                         "data": json.dumps(session.to_sse(), ensure_ascii=False),
+                     }
+         except asyncio.CancelledError:
+-            pass
++            print_debug("MAIN", "SSE 连接被取消")
+         finally:
+             try:
+                 sse_queues.remove(queue)
++                print_debug("MAIN", f"SSE 客户端断开，剩余队列: {len(sse_queues)}")
+             except ValueError:
+                 pass
+ 
+@@ -145,6 +164,16 @@ async def stream(request: Request):
+ @app.post("/api/step/welcome")
+ async def step_welcome():
+     """Reset session, set 10s countdown, move to presenting."""
++    global _auto_end_task
++    print_step("MAIN", "=== Step: welcome ===")
++    print_debug("MAIN", "重置会话，设置 10s 倒计时")
++
++    # 取消上一个自动结束任务（防止旧任务在新 session 中误触发）
++    if _auto_end_task and not _auto_end_task.done():
++        _auto_end_task.cancel()
++        print_debug("MAIN", "已取消旧的自动结束任务")
++        _auto_end_task = None
++
+     session.step = "welcome"
+     session.countdown = 10
+     session.audio_path = None
+@@ -155,31 +184,59 @@ async def step_welcome():
+     session.photo_path = None
+     session.qr_path = None
+     session.error = None
++    session.video_frames = None
++    session.camera_instance = None
+     session.step = "presenting"
+     await broadcast_state()
++    print_debug("MAIN", f"welcome 完成，当前 step={session.step}")
+     return {"status": "ok", "step": session.step}
+ 
+ 
++@app.post("/api/step/presenting/frame")
++async def step_presenting_frame(request: Request):
++    """接收前端传来的视频帧（Base64 JPEG），存入 session.video_frames。"""
++    if session.step != "presenting":
++        return {"status": "ignored", "reason": "not in presenting step"}
++    try:
++        body = await request.json()
++        frame_data = body.get("frame", "")
++        if not frame_data:
++            return {"status": "error", "reason": "no frame data"}
++        # 确保列表已初始化
++        if session.video_frames is None:
++            session.video_frames = []
++        # 存到列表（只存最近 600 帧 ≈ 120s @ 5fps）
++        if len(session.video_frames) < 600:
++            session.video_frames.append(frame_data)
++        return {"status": "ok", "stored": len(session.video_frames)}
++    except Exception as e:
++        return {"status": "error", "reason": str(e)}
++
++
+ @app.post("/api/step/presenting/start")
+ async def step_presenting_start():
+     """Start 120 s recording (audio + video pipelines)."""
++    global _auto_end_task
++    print_step("MAIN", "=== Step: presenting/start ===")
+     _require_step("presenting")
+     session.countdown = AUDIO_DURATION
++    print_debug("MAIN", f"开始录制，倒计时={AUDIO_DURATION}s")
+     await broadcast_state()
+ 
+     # Start recording in background
+     asyncio.create_task(orchestrator.start_recording())
+ 
+-    # Auto-end after the max duration
++    # Auto-end（保存引用，welcome 或 end 时取消）
+     async def _auto_end():
+         await asyncio.sleep(AUDIO_DURATION)
+         if session.step == "presenting":
++            print_debug("MAIN", "自动结束录制（超时）")
+             try:
+                 await step_presenting_end()
+-            except Exception:
+-                pass
++            except Exception as e:
++                print_error("MAIN", f"自动结束录制异常: {e}")
+ 
+-    asyncio.create_task(_auto_end())
++    _auto_end_task = asyncio.create_task(_auto_end())
+ 
+     return {"status": "ok", "step": session.step}
+ 
+@@ -187,9 +244,19 @@ async def step_presenting_start():
+ @app.post("/api/step/presenting/end")
+ async def step_presenting_end():
+     """Stop recording, enter thinking state, start 3-pipeline analysis."""
++    global _auto_end_task
++    print_step("MAIN", "=== Step: presenting/end ===")
+     _require_step("presenting")
+     session.step = "thinking"
+     session.countdown = 0
++
++    # 取消自动结束任务（用户手动结束了，不让 auto_end 再触发一次）
++    if _auto_end_task and not _auto_end_task.done():
++        _auto_end_task.cancel()
++        _auto_end_task = None
++        print_debug("MAIN", "已取消自动结束任务（用户手动结束）")
++
++    print_debug("MAIN", "进入思考阶段，启动三管线分析")
+     await broadcast_state()
+ 
+     # Analysis runs in background — it pushes progress via SSE
+@@ -201,7 +268,13 @@ async def step_presenting_end():
+ @app.post("/api/step/thinking/complete")
+ async def step_thinking_complete():
+     """Analysis done — move to reviewing."""
++    print_step("MAIN", "=== Step: thinking/complete ===")
+     _require_step("thinking")
++    print_data("MAIN", "session.transcript", session.transcript)
++    print_data("MAIN", "session.fluency_report", session.fluency_report)
++    print_data("MAIN", "session.emotion_report", session.emotion_report)
++    print_data("MAIN", "session.review", session.review)
++    print_data("MAIN", "session.error", session.error)
+     session.step = "reviewing"
+     await broadcast_state()
+     return {"status": "ok", "step": session.step}
+@@ -210,8 +283,10 @@ async def step_thinking_complete():
+ @app.post("/api/step/reviewing/complete")
+ async def step_reviewing_complete():
+     """Review acknowledged — move to photo state and start output generation."""
++    print_step("MAIN", "=== Step: reviewing/complete ===")
+     _require_step("reviewing")
+     session.step = "photo"
++    print_debug("MAIN", "进入合影阶段，启动输出生成")
+     await broadcast_state()
+ 
+     # Generate photo + QR code in background
+@@ -223,7 +298,9 @@ async def step_reviewing_complete():
+ @app.post("/api/step/photo/complete")
+ async def step_photo_complete():
+     """Photo taken — session complete."""
++    print_step("MAIN", "=== Step: photo/complete ===")
+     _require_step("photo")
+     session.step = "complete"
++    print_debug("MAIN", f"会话完成，photo_path={session.photo_path}, qr_path={session.qr_path}")
+     await broadcast_state()
+     return {"status": "ok", "step": session.step}
+diff --git a/backend/models/session.py b/backend/models/session.py
+index c8a9cb5..45c54cc 100644
+--- a/backend/models/session.py
++++ b/backend/models/session.py
+@@ -1,10 +1,27 @@
++import uuid
+ from dataclasses import dataclass, field
+ from typing import Any
++import os
++
++
++def _path_to_url(path: str | None) -> str | None:
++    """将本地文件路径转为 /static/ 开头的 URL。"""
++    if not path:
++        return None
++    # 提取 data/ 后面的相对路径
++    if "\\data\\" in path:
++        rel = path.split("\\data\\", 1)[1]
++    elif "/data/" in path:
++        rel = path.split("/data/", 1)[1]
++    else:
++        rel = os.path.basename(path)
++    return f"/static/{rel.replace(os.sep, '/')}"
+ 
+ 
+ @dataclass
+ class BoothSession:
+     """评审亭一次会话的状态"""
++    session_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+     step: str = "welcome"          # welcome | presenting | thinking | reviewing | photo | complete
+     countdown: int = 0
+     audio_path: str | None = None
+@@ -16,6 +33,10 @@ class BoothSession:
+     qr_path: str | None = None
+     error: str | None = None
+ 
++    # 录制阶段的原始数据（大对象，不序列化到 SSE）
++    video_frames: list | None = None         # 从浏览器传来的视频帧
++    camera_instance: Any | None = None       # CameraCapture 对象（已废弃，保留兼容）
++
+     def to_sse(self) -> dict:
+         return {
+             "step": self.step,
+@@ -25,8 +46,8 @@ class BoothSession:
+                 "fluency": self.fluency_report,
+                 "emotion": self.emotion_report,
+                 "review": self.review,
+-                "photo": self.photo_path,
+-                "qr": self.qr_path,
++                "photo": _path_to_url(self.photo_path),
++                "qr": _path_to_url(self.qr_path),
+                 "error": self.error,
+             },
+         }
+diff --git a/backend/pipelines/audio/processor.py b/backend/pipelines/audio/processor.py
+index 2543a6c..9e3d429 100644
+--- a/backend/pipelines/audio/processor.py
++++ b/backend/pipelines/audio/processor.py
+@@ -5,8 +5,12 @@
+ 对外暴露 session 级别的接口供 PipelineOrchestrator 调用。
+ """
+ 
++import os
++import time
++
+ from models.session import BoothSession
+ from models.performance import FluencyReport
++from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
+ 
+ 
+ async def analyze_fluency(session: BoothSession) -> dict | None:
+@@ -18,27 +22,50 @@ async def analyze_fluency(session: BoothSession) -> dict | None:
+     返回:
+         FluencyReport 的 dict 形式，失败返回 None
+     """
++    t_pipeline = time.time()
++    print_step("AUDIO", "=== 音频管线启动 ===")
+     try:
+         from pipelines.audio.recorder import record_audio
+         from pipelines.audio.whisper_engine import transcribe
+         from pipelines.audio.fluency_analyzer import analyze_fluency as _calc
+ 
+-        # 1. 录音
+-        audio_path = await record_audio(duration=120, sample_rate=16000)
+-        session.audio_path = audio_path
++        # 1. 录音（仅当还没录过时）
++        if session.audio_path and os.path.isfile(session.audio_path):
++            audio_path = session.audio_path
++            print_debug("AUDIO", f"使用已有录音: {audio_path}")
++            print_file_size("AUDIO", audio_path)
++        else:
++            print_step("AUDIO", ">> 录音阶段（10s，路演已结束，只需采集用户刚才说的内容）")
++            t0 = time.time()
++            # 此时用户已结束路演，只录 10s 就够了（正常应在 presenting 阶段录完）
++            audio_path = await record_audio(duration=60, sample_rate=16000)
++            session.audio_path = audio_path
++            print_debug("AUDIO", f"录音完成，耗时 {time.time()-t0:.1f}s")
++            print_file_size("AUDIO", audio_path)
+ 
+         # 2. 转写
++        print_step("AUDIO", ">> Whisper 转写阶段")
++        t0 = time.time()
+         whisper_result = await transcribe(audio_path)
++        print_debug("AUDIO", f"转写完成，耗时 {time.time()-t0:.1f}s")
+         if whisper_result is None:
+             session.error = "语音转写失败（Whisper 服务不可用）"
++            print_error("AUDIO", "Whisper 转写返回 None")
+             return None
+ 
+         session.transcript = whisper_result.get("text", "")
++        print_data("AUDIO", "转写文本", session.transcript)
++        print_data("AUDIO", "片段数", whisper_result.get("segments", []))
++        print_debug("AUDIO", f"检测语言: {whisper_result.get('language', '?')}")
+ 
+         # 3. 流畅度分析
++        print_step("AUDIO", ">> 流畅度分析阶段")
++        t0 = time.time()
+         segments = whisper_result.get("segments", [])
+         metrics = _calc(segments)
+         metrics["summary"] = _generate_summary(metrics)
++        print_debug("AUDIO", f"流畅度分析完成，耗时 {time.time()-t0:.2f}s")
++        print_data("AUDIO", "流畅度指标", metrics)
+ 
+         report = FluencyReport(
+             avg_wpm=metrics.get("avg_wpm", 0),
+@@ -52,13 +79,16 @@ async def analyze_fluency(session: BoothSession) -> dict | None:
+         ).model_dump()
+ 
+         session.fluency_report = report
++        print_step("AUDIO", f"=== 音频管线完成，总耗时 {time.time()-t_pipeline:.1f}s ===")
+         return report
+ 
+     except ImportError as e:
+         session.error = f"音频管线模块缺失: {e}"
++        print_error("AUDIO", f"模块缺失: {e}")
+         return None
+     except Exception as e:
+         session.error = f"音频分析异常: {e}"
++        print_error("AUDIO", f"异常: {e}")
+         return None
+ 
+ 
+diff --git a/backend/pipelines/audio/recorder.py b/backend/pipelines/audio/recorder.py
+index fc5c672..bb21848 100644
+--- a/backend/pipelines/audio/recorder.py
++++ b/backend/pipelines/audio/recorder.py
+@@ -1,82 +1,89 @@
+ """
+ 麦克风录制模块
+ 
+-使用 pyaudio 从系统默认麦克风采集音频，以 WAV 格式保存到
+-backend/data/audio/ 目录。
+-
+-典型用法:
+-    audio_path = await record_audio(duration=120, sample_rate=16000)
++使用 pyaudio 回调模式采集音频，支持外部即时停止。
++以 WAV 格式保存到 backend/data/audio/ 目录。
+ """
+ 
+ import wave
+ import asyncio
++import threading
+ from datetime import datetime
+ from pathlib import Path
+ 
++from debug_utils import print_debug, print_step, print_error
++
+ AUDIO_DIR = Path(__file__).resolve().parents[2] / "data" / "audio"
+ 
+-_recording_stream = None
++# 全局状态（回调线程和主协程共享）
+ _recording_active = False
++_recording_frames: list[bytes] = []
++_recording_stream = None
++_recording_pyaudio = None
+ 
+ 
+-async def record_audio(duration: int = 120, sample_rate: int = 16000) -> str:
++def _audio_callback(in_data, frame_count, time_info, status):
++    """PyAudio 回调：采集音频数据（在音频线程中调用）"""
++    global _recording_frames, _recording_active
++    if _recording_active:
++        _recording_frames.append(in_data)
++    return (None, 0)  # pyaudio.paContinue
++
++
++async def record_audio(duration: int = 60, sample_rate: int = 16000) -> str:
+     """
+-    从默认麦克风录制音频并保存为 WAV 文件。
++    从默认麦克风录制音频并保存为 WAV 文件（回调模式，支持即时停止）。
+ 
+     参数:
+-        duration:   录制时长，单位秒，默认 120
++        duration:   录制时长，单位秒，默认 60
+         sample_rate: 采样率（Hz），默认 16000
+ 
+     返回:
+         生成的 WAV 文件绝对路径。
+-
+-    抛出:
+-        ImportError:  pyaudio 未安装或当前系统没有可用麦克风。
+-        RuntimeError: 录制过程中发生 I/O 错误。
+-
+-    逻辑:
+-        1. 确保 data/audio/ 目录存在
+-        2. 基于当前时间戳生成文件名 recording_YYYYMMDD_HHMMSS.wav
+-        3. 打开 pyaudio 流 (paInt16, 单声道, 16kHz)
+-        4. 循环读取帧直到 duration 秒结束
+-        5. 用 wave 模块写入 16-bit WAV
+-        6. 返回文件绝对路径
+     """
+-    global _recording_stream, _recording_active
++    global _recording_active, _recording_frames, _recording_stream, _recording_pyaudio
+ 
+     try:
+         import pyaudio
+     except ImportError:
+-        raise ImportError(
+-            "pyaudio 未安装。"
+-            "请运行: pip install pyaudio\n"
+-            "Windows 用户如果安装失败，请先安装 wheel:\n"
+-            "  pip install pipwin && pipwin install pyaudio\n"
+-            "或从 https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio 下载对应版本。"
+-        )
++        print_error("RECORDER", "pyaudio 未安装")
++        raise ImportError("pyaudio 未安装")
+ 
+-    # 确保输出目录存在
+-    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
++    # 重置状态
++    _recording_frames = []
+ 
+-    # 生成带时间戳的文件名
++    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+     file_path = AUDIO_DIR / f"recording_{timestamp}.wav"
++    print_step("RECORDER", f"录音文件: {file_path}")
+ 
+-    # pyaudio 参数
+     chunk = 1024
+     channels = 1
+     audio_format = pyaudio.paInt16
+ 
+     p = pyaudio.PyAudio()
++    _recording_pyaudio = p
++    device_count = p.get_device_count()
+ 
+-    # 检查是否有输入设备
+-    try:
+-        default_input = p.get_default_input_device_info()
+-    except (OSError, IOError):
++    # 列出输入设备
++    input_devices = []
++    for i in range(device_count):
++        try:
++            info = p.get_device_info_by_index(i)
++            if info.get('maxInputChannels', 0) > 0:
++                input_devices.append((i, info['name'], info['maxInputChannels']))
++        except Exception:
++            pass
++
++    # 选第一个输入设备
++    device_index = None
++    if input_devices:
++        device_index = input_devices[0][0]
++        print_debug("RECORDER", f"选择输入设备: #{device_index} - {input_devices[0][1]}")
++    else:
+         p.terminate()
+-        raise ImportError(
+-            "未检测到麦克风输入设备。请确认麦克风已正确连接。"
+-        )
++        print_error("RECORDER", "未检测到麦克风")
++        raise ImportError("未检测到麦克风输入设备")
+ 
+     try:
+         stream = p.open(
+@@ -84,66 +91,80 @@ async def record_audio(duration: int = 120, sample_rate: int = 16000) -> str:
+             channels=channels,
+             rate=sample_rate,
+             input=True,
++            input_device_index=device_index,
+             frames_per_buffer=chunk,
++            stream_callback=_audio_callback,  # 回调模式！
+         )
+     except OSError as e:
+-        p.terminate()
+-        raise ImportError(
+-            f"无法打开音频输入流: {e}\n"
+-            "请确认麦克风未被其他程序占用且驱动正常。"
+-        )
++        # 回退到默认设备
++        print_debug("RECORDER", f"指定设备失败，回退到默认: {e}")
++        try:
++            stream = p.open(
++                format=audio_format,
++                channels=channels,
++                rate=sample_rate,
++                input=True,
++                frames_per_buffer=chunk,
++                stream_callback=_audio_callback,
++            )
++        except OSError as e2:
++            p.terminate()
++            print_error("RECORDER", f"无法打开音频输入流: {e2}")
++            raise ImportError(f"无法打开音频输入流: {e2}")
+ 
+     _recording_stream = stream
+     _recording_active = True
++    stream.start_stream()
+ 
+-    frames = []
+-    total_frames = int(sample_rate / chunk * duration)
++    print_debug("RECORDER", f"录音开始（回调模式）: {sample_rate}Hz, {channels}ch, 最长 {duration}s")
+ 
+-    try:
+-        for _ in range(total_frames):
+-            if not _recording_active:
+-                break
+-            data = stream.read(chunk, exception_on_overflow=False)
+-            frames.append(data)
+-            # 每 10 帧让出一次事件循环，避免阻塞其他协程
+-            if len(frames) % 10 == 0:
+-                await asyncio.sleep(0)
+-    except Exception as e:
+-        raise RuntimeError(f"录制过程中发生错误: {e}")
+-    finally:
+-        # 关闭流
+-        if stream.is_active():
+-            stream.stop_stream()
+-        stream.close()
+-        p.terminate()
+-        _recording_stream = None
+-        _recording_active = False
++    # 等待 duration 秒或 _recording_active 变为 False
++    for _ in range(duration * 10):  # 每 100ms 检查一次
++        if not _recording_active:
++            print_debug("RECORDER", "录音被外部停止")
++            break
++        await asyncio.sleep(0.1)
+ 
+-    # 写入 WAV 文件
+-    with wave.open(str(file_path), "wb") as wf:
+-        wf.setnchannels(channels)
+-        wf.setsampwidth(p.get_sample_size(audio_format))
+-        wf.setframerate(sample_rate)
+-        wf.writeframes(b"".join(frames))
++    # 保存 sample_width 再 terminate
++    sample_width = p.get_sample_size(audio_format)
++
++    # 停止
++    _recording_active = False
++    if stream.is_active():
++        stream.stop_stream()
++    stream.close()
++    p.terminate()
++    _recording_stream = None
++    _recording_pyaudio = None
++
++    total_frames = len(_recording_frames)
++    print_debug("RECORDER", f"录音结束，共采集 {total_frames} 块")
++
++    # 写入 WAV（用提前保存的 sample_width）
++    if _recording_frames:
++        with wave.open(str(file_path), "wb") as wf:
++            wf.setnchannels(channels)
++            wf.setsampwidth(sample_width)
++            wf.setframerate(sample_rate)
++            wf.writeframes(b"".join(_recording_frames))
++        actual_seconds = total_frames * chunk / sample_rate
++        print_debug("RECORDER", f"WAV 已写入: {actual_seconds:.1f}s")
++        print_step("RECORDER", f"录音完成: {file_path} ({total_frames} 块)")
++    else:
++        print_error("RECORDER", "没有录到音频帧")
+ 
+     return str(file_path.resolve())
+ 
+ 
+ async def stop_recording():
+-    """
+-    停止正在进行的录制。
++    """停止正在进行的录制。"""
++    global _recording_active, _recording_stream, _recording_pyaudio
+ 
+-    安全地关闭 pyaudio 流，丢弃已采集的音频数据。
+-    """
+-    global _recording_stream, _recording_active
++    if not _recording_active:
++        return
+ 
+-    _recording_active = False
++    print_debug("RECORDER", "外部请求停止录音")
++    _recording_active = False  # 回调会停止追加数据
+ 
+-    if _recording_stream is not None:
+-        try:
+-            if _recording_stream.is_active():
+-                _recording_stream.stop_stream()
+-            _recording_stream.close()
+-        except Exception:
+-            pass  # 流可能已经被释放
+-        _recording_stream = None
++    # 不关 stream——由 record_audio 的循环检测到 _recording_active 后自己关
++    # 这样避免并发关闭冲突
+diff --git a/backend/pipelines/audio/whisper_engine.py b/backend/pipelines/audio/whisper_engine.py
+index bae64fb..3bfe1ca 100644
+--- a/backend/pipelines/audio/whisper_engine.py
++++ b/backend/pipelines/audio/whisper_engine.py
+@@ -11,6 +11,8 @@ faster-whisper 基于 CTranslate2，速度比原版 openai-whisper 快 3-4 倍
+ import logging
+ from pathlib import Path
+ 
++from debug_utils import print_debug, print_step, print_error
++
+ logger = logging.getLogger(__name__)
+ 
+ # 全局缓存模型，避免重复加载
+@@ -38,6 +40,7 @@ async def transcribe(audio_path: str) -> dict | None:
+     audio_path_obj = Path(audio_path)
+     if not audio_path_obj.exists():
+         logger.error("音频文件不存在: %s", audio_path)
++        print_error("WHISPER", f"音频文件不存在: {audio_path}")
+         return None
+ 
+     try:
+@@ -45,19 +48,25 @@ async def transcribe(audio_path: str) -> dict | None:
+ 
+         global _MODEL
+         if _MODEL is None:
+-            logger.info("加载 faster-whisper small 模型（首次加载较慢）...")
++            print_step("WHISPER", "加载 faster-whisper small 模型（首次下载约 20s）...")
+             _MODEL = WhisperModel("small", device="cpu", compute_type="int8")
+-            logger.info("模型加载完成")
++            print_debug("WHISPER", "faster-whisper 模型加载完成")
+ 
++        print_step("WHISPER", f"开始转写: {audio_path}")
++        import time
++        t0 = time.time()
+         segments, info = _MODEL.transcribe(
+             str(audio_path),
+             language="zh",
+             beam_size=3,
+             vad_filter=True,
+         )
++        print_debug("WHISPER", f"转写 API 调用完成，耗时 {time.time()-t0:.1f}s")
++        print_debug("WHISPER", f"检测语言: {info.language}, 概率: {info.language_probability:.2f}")
+ 
+         full_text = ""
+         segment_list = []
++        seg_count = 0
+         for seg in segments:
+             full_text += seg.text
+             segment_list.append({
+@@ -66,8 +75,12 @@ async def transcribe(audio_path: str) -> dict | None:
+                 "end": round(seg.end, 2),
+                 "confidence": round(seg.avg_logprob, 3),
+             })
++            seg_count += 1
++
++        print_debug("WHISPER", f"转写完成: {seg_count} 个片段, 总字符数 {len(full_text)}")
+ 
+         if not full_text.strip() and not segment_list:
++            print_debug("WHISPER", "转写结果为空，返回空结果")
+             return _empty_result()
+ 
+         return {
+@@ -78,9 +91,11 @@ async def transcribe(audio_path: str) -> dict | None:
+ 
+     except ImportError:
+         logger.warning("faster-whisper 未安装，尝试使用 openai-whisper 备用")
++        print_debug("WHISPER", "faster-whisper 未安装，尝试 openai-whisper 备用")
+         return await _transcribe_fallback(audio_path)
+     except Exception as e:
+         logger.error("faster-whisper 转写失败: %s", e)
++        print_error("WHISPER", f"faster-whisper 转写失败: {e}")
+         return await _transcribe_fallback(audio_path)
+ 
+ 
+@@ -90,23 +105,30 @@ async def _transcribe_fallback(audio_path: str) -> dict | None:
+         import whisper
+     except ImportError:
+         logger.error("openai-whisper 也未安装，无可用转写引擎")
++        print_error("WHISPER", "openai-whisper 也未安装，无可用转写引擎")
+         return None
+ 
+     try:
++        print_debug("WHISPER", "加载 openai-whisper 模型...")
+         model = whisper.load_model("small")
++        print_debug("WHISPER", "开始 openai-whisper 转写...")
+         result = model.transcribe(
+             audio_path, language="zh", task="transcribe", beam_size=3, vad_filter=True,
+         )
++        print_debug("WHISPER", "openai-whisper 转写完成")
+     except Exception as e:
+         logger.error("openai-whisper 备用转写失败: %s", e)
++        print_error("WHISPER", f"openai-whisper 转写失败: {e}")
+         return None
+ 
+     text = (result.get("text") or "").strip()
+     segments = result.get("segments", [])
+ 
+     if not text and not segments:
++        print_debug("WHISPER", "openai-whisper 转写结果为空")
+         return _empty_result()
+ 
++    print_debug("WHISPER", f"openai-whisper 转写: {len(text)} 字符, {len(segments)} 片段")
+     return {
+         "text": text,
+         "segments": [
+diff --git a/backend/pipelines/llm/llm_engine.py b/backend/pipelines/llm/llm_engine.py
+index 8a86c0a..9c857f8 100644
+--- a/backend/pipelines/llm/llm_engine.py
++++ b/backend/pipelines/llm/llm_engine.py
+@@ -14,6 +14,7 @@ import httpx
+ 
+ from models.session import BoothSession
+ from pipelines.llm.prompt_builder import build_prompt
++from debug_utils import print_debug, print_step, print_data, print_error
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -46,25 +47,51 @@ async def generate_review(session: BoothSession) -> dict:
+     5. 不满足则重试（最多 2 次）
+     6. 返回 review dict
+     """
++    print_step("LLM", "=== 评审生成 ===")
+     messages = build_prompt(session)
+ 
++    # 检查 API Key
++    if not LLM_API_KEY:
++        print_error("LLM", "LLM_API_KEY 未设置，使用 fallback 评审")
++        session.error = "LLM_API_KEY 未设置"
++        return dict(FALLBACK_REVIEW)
++
++    print_debug("LLM", f"API URL: {LLM_API_URL}")
++    print_debug("LLM", f"Model: {LLM_MODEL}")
++    print_data("LLM", "system 消息长度", len(messages[0].get("content", "")))
++    print_data("LLM", "user 消息长度", len(messages[1].get("content", "")))
++
+     last_error: Exception | None = None
+     for attempt in range(3):
++        print_step("LLM", f">> API 调用第 {attempt+1}/3 次尝试")
+         try:
++            import time
++            t0 = time.time()
+             response_data = await _call_llm_api(messages)
++            elapsed = time.time() - t0
++            print_debug("LLM", f"API 响应完成，耗时 {elapsed:.1f}s")
++            print_data("LLM", "原始响应（前200字符）", response_data[:200])
++
+             review = await _parse_review_response(response_data)
+             if _validate_review(review):
++                print_step("LLM", "评审 JSON 验证通过")
++                print_data("LLM", "生成的 insight", review.get("insight", ""))
+                 return review
++
+             logger.warning("LLM 响应验证失败（attempt %d/3），重试中...", attempt + 1)
++            print_error("LLM", f"响应验证失败（attempt {attempt+1}/3）")
+         except Exception as exc:
+             last_error = exc
+             logger.error("LLM API 调用异常（attempt %d/3）: %s", attempt + 1, exc)
++            print_error("LLM", f"API 调用异常: {exc}")
+ 
+     error_msg = (
+         f"LLM 评审生成失败: {last_error}" if last_error else "LLM 响应验证不通过"
+     )
+     session.error = error_msg
+     logger.error("使用 fallback 评审: %s", error_msg)
++    print_error("LLM", f"使用 fallback 评审: {error_msg}")
++    print_data("LLM", "fallback_review", FALLBACK_REVIEW)
+     return dict(FALLBACK_REVIEW)
+ 
+ 
+@@ -81,6 +108,11 @@ async def _call_llm_api(messages: list) -> str:
+     if not LLM_API_KEY:
+         raise ValueError("LLM_API_KEY 未设置，无法调用 LLM API")
+ 
++    # 截断 API Key 用于 debug 显示
++    key_preview = LLM_API_KEY[:8] + "..." if len(LLM_API_KEY) > 8 else "?"
++    print_debug("LLM", f"使用 API Key: {key_preview}")
++    print_debug("LLM", f"请求 URL: {LLM_API_URL}")
++
+     headers = {
+         "Content-Type": "application/json",
+         "Authorization": f"Bearer {LLM_API_KEY}",
+@@ -94,8 +126,12 @@ async def _call_llm_api(messages: list) -> str:
+         "messages": messages,
+     }
+ 
++    import time
++    t0 = time.time()
+     async with httpx.AsyncClient(timeout=60.0) as client:
+         response = await client.post(LLM_API_URL, headers=headers, json=body)
++        elapsed = time.time() - t0
++        print_debug("LLM", f"HTTP 响应: status={response.status_code}, 耗时 {elapsed:.1f}s")
+         response.raise_for_status()
+         data = response.json()
+ 
+@@ -104,10 +140,15 @@ async def _call_llm_api(messages: list) -> str:
+     if not choices:
+         raise ValueError("LLM 响应中没有 choices")
+ 
++    finish_reason = choices[0].get("finish_reason", "?")
++    usage = data.get("usage", {})
++    print_debug("LLM", f"finish_reason={finish_reason}, usage={usage}")
++
+     content = choices[0].get("message", {}).get("content", "")
+     if not content:
+         raise ValueError("LLM 响应中 message.content 为空")
+ 
++    print_debug("LLM", f"响应内容长度: {len(content)} 字符")
+     return content
+ 
+ 
+diff --git a/backend/pipelines/llm/prompt_builder.py b/backend/pipelines/llm/prompt_builder.py
+index 63ab9c5..c4b88ec 100644
+--- a/backend/pipelines/llm/prompt_builder.py
++++ b/backend/pipelines/llm/prompt_builder.py
+@@ -7,6 +7,17 @@
+ 
+ from models.session import BoothSession
+ from pipelines.llm.persona import MUSK_SYSTEM_PROMPT, REVIEW_OUTPUT_SCHEMA
++from debug_utils import print_debug, print_step, print_data, print_error
++
++# 高质量示例，用来锚定"语气 + 颗粒度"（不照抄内容，只学风格）
++REVIEW_EXAMPLE = """参考示例（项目：用 AI 给外卖订单自动派单、优化配送路径）：
++{
++  "insight": "你在给一个已经解决的问题，造第三个轮子。",
++  "highlights": ["真接了实时路况 API，不是写死的假数据", "自己实现了贪心+模拟退火的调度，是动了手的"],
++  "sharp_question": "美团饿了么的派单系统迭代了十年，你凭什么更优？你的算法到 1 万单还跑得动吗？",
++  "suggestions": ["别和巨头拼通用派单，找一个他们看不上的垂直场景（园区、医院送检）", "把模拟退火换成可解释的规则+局部搜索，现场出问题你能调"],
++  "closing": "技术不差，方向危险。换个战场，继续干。"
++}"""
+ 
+ 
+ def _build_fluency_summary(fluency: dict | None) -> str:
+@@ -77,16 +88,21 @@ def build_prompt(session: BoothSession) -> list:
+             {"role": "user", "content": prompt_text}
+         ]
+     """
++    print_step("PROMPT", "=== 组装 LLM Prompt ===")
+     transcript = session.transcript or "（无转写文本）"
+     fluency_summary = _build_fluency_summary(session.fluency_report)
+     emotion_summary = _build_emotion_summary(session.emotion_report)
+ 
++    print_data("PROMPT", "transcript 前100字", transcript[:100])
++    print_data("PROMPT", "fluency_report 是否存在", session.fluency_report is not None)
++    print_data("PROMPT", "emotion_report 是否存在", session.emotion_report is not None)
++
+     prompt_text = f"""以下是黑客松参赛者的项目介绍（语音转写文本）：
+ {transcript}
+ 
+ ---
+ 
+-此外，以下是该参赛者在路演过程中的表现分析：
++以下是该参赛者在路演过程中的表现分析（请把它当评审弹药，在能支撑判断时引用一次，别堆数据）：
+ 
+ 【演讲流畅度】
+ {fluency_summary}
+@@ -96,14 +112,20 @@ def build_prompt(session: BoothSession) -> list:
+ 
+ ---
+ 
++{REVIEW_EXAMPLE}
++
++---
++
+ {REVIEW_OUTPUT_SCHEMA}
+ 
+-请按以下结构输出评审报告：
+-1. 一句话本质洞察（不超过25字）
+-2. 2-3个具体的硬核亮点
+-3. 1个尖锐的第一性原理问题
+-4. 1-2条可执行的硬核建议
+-5. 一句结语"""
++要求：
++- 用马斯克的口吻：短句、结论先行、对抗性、可带黑色幽默；不要客气的 AI 味。
++- 亮点必须具体到技术/工程细节；尖锐问题要直击"这项目能不能成立"。
++- 若转写文本几乎为空或听不出在做什么，就直接在 insight 里点破"我没听到任何工程"，不要编造亮点。
++- 只输出 JSON，全中文，insight ≤ 25 字。"""
++
++    total_len = len(prompt_text) + len(MUSK_SYSTEM_PROMPT)
++    print_debug("PROMPT", f"Prompt 总长度: ~{total_len} 字符")
+ 
+     return [
+         {"role": "system", "content": MUSK_SYSTEM_PROMPT},
+diff --git a/backend/pipelines/output/h5_generator.py b/backend/pipelines/output/h5_generator.py
+index 15df551..57bb2d7 100644
+--- a/backend/pipelines/output/h5_generator.py
++++ b/backend/pipelines/output/h5_generator.py
+@@ -9,8 +9,10 @@ import os
+ import json
+ import uuid
+ import logging
++import time
+ 
+ from models.session import BoothSession
++from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -21,31 +23,45 @@ async def generate_h5(
+     session: BoothSession,
+     photo_path: str | None = None,
+     output_dir: str = H5_OUTPUT_DIR,
++    snapshot_data: dict | None = None,
+ ) -> str:
+     """
+     生成评审报告的 H5 单页 HTML。
+ 
+     包含:
+-    - 项目信息（名称 + 团队名）
+     - 5 段完整评审
++    - 流畅度 + 情绪数据
+     - 合影图片
+-    - 流畅度 + 情绪雷达图数据
+     - 马斯克签名语录
+-    - 分享按钮（占位）
+ 
+     参数:
+-        session: BoothSession（含 review、fluency_report、emotion_report 等）
++        session: BoothSession
+         photo_path: 合影图片路径（可选）
+         output_dir: 输出目录
++        snapshot_data: 快照数据（AI 生图太慢时用，防止 session 被重置丢数据）
+ 
+     返回:
+         HTML 文件绝对路径
+     """
++    print_step("H5", "=== H5 页面生成 ===")
+     os.makedirs(output_dir, exist_ok=True)
+ 
+-    review = session.review or {}
+-    fluency = session.fluency_report or {}
+-    emotion = session.emotion_report or {}
++    t0 = time.time()
++
++    # 优先使用快照数据（防止 AI 生图期间 session 被重置）
++    if snapshot_data:
++        review = snapshot_data.get("review", {})
++        fluency = snapshot_data.get("fluency", {})
++        emotion = snapshot_data.get("emotion", {})
++        print_debug("H5", "使用快照数据")
++    else:
++        review = session.review or {}
++        fluency = session.fluency_report or {}
++        emotion = session.emotion_report or {}
++
++    print_data("H5", "review", review)
++    print_data("H5", "fluency", fluency)
++    print_data("H5", "emotion", emotion)
+ 
+     html = _build_html(
+         review=review,
+@@ -53,14 +69,17 @@ async def generate_h5(
+         emotion=emotion,
+         photo_path=photo_path,
+     )
++    print_debug("H5", f"HTML 长度: {len(html)} 字符")
+ 
+-    filename = f"review_{uuid.uuid4().hex[:8]}.html"
++    filename = f"review_{session.session_id}.html"
+     output_path = os.path.join(output_dir, filename)
+ 
+     with open(output_path, "w", encoding="utf-8") as f:
+         f.write(html)
+ 
+-    logger.info("H5 页面已生成: %s", output_path)
++    elapsed = time.time() - t0
++    print_file_size("H5", output_path)
++    print_step("H5", f"H5 页面生成完成，耗时 {elapsed:.1f}s")
+     return output_path
+ 
+ 
+diff --git a/backend/pipelines/output/img_gen_engine.py b/backend/pipelines/output/img_gen_engine.py
+new file mode 100644
+index 0000000..2313628
+--- /dev/null
++++ b/backend/pipelines/output/img_gen_engine.py
+@@ -0,0 +1,149 @@
++"""
++AI 生图引擎 — InfiniteYou 换脸方案
++
++用你的模板图 + InfiniteYou 把你的脸换上去
++"""
++
++import asyncio
++import io
++import os
++import time
++import uuid
++import logging
++
++import httpx
++from PIL import Image, ImageDraw, ImageFont
++
++from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
++
++logger = logging.getLogger(__name__)
++
++API_KEY = os.getenv("IMG_GEN_API_KEY", "")
++API_BASE = "https://api.wavespeed.ai/api/v3"
++
++# Polaroid 模板图路径
++TEMPLATE_PATH = "D:/hks/backend/assets/polaroid_template.png"
++
++
++async def generate_portrait_card(
++    reference_image_path: str,
++    prompt: str = "",
++    review: dict | None = None,
++    qr_path: str | None = None,
++    output_dir: str = "D:/hks/backend/data/photos",
++) -> str | None:
++    """InfiniteYou 换脸：模板图 + 你的脸"""
++    if not API_KEY or not os.path.isfile(reference_image_path):
++        return None
++
++    print_step("IMG_GEN", "=== InfiniteYou 换脸 ===")
++    t0 = time.time()
++
++    try:
++        public_host = os.getenv("PUBLIC_HOST", "http://localhost:8000")
++
++        # 模板图 URL（你的 Polaroid 卡模板，从 static 目录服务）
++        template_url = f"{public_host.rstrip('/')}/static/photos/polaroid_template.png"
++        if not os.path.isfile(TEMPLATE_PATH) and not os.path.isfile("D:/hks/backend/data/photos/polaroid_template.png"):
++            print_error("IMG_GEN", "模板图不存在")
++            return None
++        print_debug("IMG_GEN", f"模板 URL: {template_url}")
++
++        # 你的脸 URL（摄像头拍的照片）
++        face_url = f"{public_host.rstrip('/')}/static/photos/{os.path.basename(reference_image_path)}"
++        print_debug("IMG_GEN", f"人脸 URL: {face_url}")
++
++        # 调用 InfiniteYou 换脸
++        result_url = await _call_infinite_you(face_url, template_url)
++        if not result_url:
++            print_error("IMG_GEN", "InfiniteYou 换脸失败")
++            return None
++
++        # 下载结果
++        os.makedirs(output_dir, exist_ok=True)
++        out_path = os.path.join(output_dir, f"card_{uuid.uuid4().hex[:8]}.jpg")
++        async with httpx.AsyncClient(timeout=60.0) as client:
++            resp = await client.get(result_url)
++            resp.raise_for_status()
++            img_data = resp.content
++
++        # Pillow：右下角贴二维码（缩小）
++        img = Image.open(io.BytesIO(img_data)).convert("RGB")
++        w, h = img.size
++        draw = ImageDraw.Draw(img)
++
++        if qr_path and os.path.isfile(qr_path):
++            try:
++                qr = Image.open(qr_path).convert("RGBA")
++                qr_size = min(w, h) // 6  # 缩小到卡片的 1/6
++                qr = qr.resize((qr_size, qr_size), Image.LANCZOS)
++                margin = int(w * 0.04)
++                qr_x = w - qr_size - margin
++                qr_y = h - qr_size - margin
++                # 半透明白底
++                draw.rounded_rectangle([qr_x - 6, qr_y - 6, qr_x + qr_size + 6, qr_y + qr_size + 6],
++                                      radius=6, fill=(255, 255, 255, 200))
++                img.paste(qr, (qr_x, qr_y), qr)
++                print_debug("IMG_GEN", f"二维码已贴右下角: {qr_size}px")
++            except Exception as e:
++                print_debug("IMG_GEN", f"二维码粘贴失败: {e}")
++
++        img.save(out_path, quality=95)
++        elapsed = time.time() - t0
++        print_file_size("IMG_GEN", out_path)
++        print_step("IMG_GEN", f"InfiniteYou 换脸完成，耗时 {elapsed:.1f}s")
++        return out_path
++
++    except Exception as e:
++        print_error("IMG_GEN", f"失败: {e}")
++        return None
++
++
++async def _call_infinite_you(source_url: str, target_url: str) -> str | None:
++    """InfiniteYou 换脸：source=你的脸, target=模板图"""
++    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
++    body = {"source_image": source_url, "target_image": target_url, "seed": 42}
++    url = f"{API_BASE}/wavespeed-ai/infinite-you"
++    print_debug("IMG_GEN", "InfiniteYou 换脸...")
++
++    async with httpx.AsyncClient(timeout=120.0) as client:
++        try:
++            resp = await client.post(url, headers=headers, json=body)
++            resp.raise_for_status()
++            data = resp.json()
++        except httpx.HTTPStatusError as e:
++            print_error("IMG_GEN", f"API 错误: {e.response.status_code} {e.response.text[:300]}")
++            return None
++        except httpx.ConnectError:
++            print_error("IMG_GEN", "无法连接 WaveSpeedAI")
++            return None
++
++    pid = data.get("data", {}).get("id")
++    if not pid:
++        print_error("IMG_GEN", f"无 prediction_id: {data}")
++        return None
++
++    poll_url = f"{API_BASE}/predictions/{pid}/result"
++    for _ in range(60):
++        await asyncio.sleep(2)
++        async with httpx.AsyncClient(timeout=30.0) as client:
++            try:
++                pr = await client.get(poll_url, headers=headers)
++                pr.raise_for_status()
++                pd = pr.json()
++            except Exception:
++                continue
++        status = pd.get("data", {}).get("status")
++        if status == "completed":
++            outputs = pd.get("data", {}).get("outputs", [])
++            if outputs:
++                url = outputs[0] if isinstance(outputs, list) else outputs
++                print_debug("IMG_GEN", f"换脸完成: {url}")
++                return url
++        elif status == "failed":
++            err = pd.get("data", {}).get("error", "?")
++            print_error("IMG_GEN", f"换脸失败: {err}")
++            return None
++
++    print_error("IMG_GEN", "轮询超时")
++    return None
+diff --git a/backend/pipelines/output/photo_composer.py b/backend/pipelines/output/photo_composer.py
+index c2b5af2..e01bf22 100644
+--- a/backend/pipelines/output/photo_composer.py
++++ b/backend/pipelines/output/photo_composer.py
+@@ -1,145 +1,228 @@
+ """
+ 合影合成模块。
+ 
+-将摄像头最佳帧与马斯克签名 PNG、活动 Logo PNG 叠加，
+-生成带有评审结语的合影照片。
++流程:
++  1. 尝试 AI 生图引擎
++  2. 失败 → Pillow 合成赛博朋克风格 Polaroid 纪念卡
+ """
+ 
+ import os
+ import uuid
+ import logging
++import time
++import math
+ 
+-from PIL import Image, ImageDraw, ImageFont
++from PIL import Image, ImageDraw, ImageFont, ImageFilter
+ 
+-logger = logging.getLogger(__name__)
++from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
+ 
+-# 素材路径
+-SIGNATURE_PATH = "D:/hks/backend/assets/musk_signature.png"
+-LOGO_PATH = "D:/hks/backend/assets/event_logo.png"
++logger = logging.getLogger(__name__)
+ 
+-# 输出参数
+-OUTPUT_WIDTH = 1920
+-OUTPUT_HEIGHT = 1080
+-SIGNATURE_SIZE = (300, 100)
+-LOGO_SIZE = (200, 80)
++# 卡片参数（3:4 竖版）
++W = 1200
++H = 1600
++PHOTO_MARGIN = 50
++PHOTO_BOX = (PHOTO_MARGIN, 230, W - PHOTO_MARGIN, 1050)  # 照片区
+ 
+-# 结语文字位置和样式
+-CLOSING_POSITION = (960, 1000)  # 底部居中
+-CLOSING_FONT_SIZE = 36
+-CLOSING_COLOR = (255, 255, 255)
++# 配色
++BLACK = (8, 8, 16)
++DARK_BLUE = (12, 18, 48)
++CARD_BG = (16, 22, 56)
++NEON_CYAN = (0, 230, 255)
++NEON_PURPLE = (160, 80, 255)
++NEON_ORANGE = (255, 180, 50)
++WHITE = (240, 240, 245)
++GRAY = (140, 140, 160)
++DIM_WHITE = (200, 200, 210)
+ 
+ 
+ async def compose_photo(
+     camera_best_photo_path: str | None = None,
+     review: dict | None = None,
++    qr_path: str | None = None,
+     output_dir: str = "D:/hks/backend/data/photos",
+ ) -> str:
+-    """
+-    合成合影。
+-
+-    逻辑:
+-    1. 加载摄像头最佳帧（如果为 None 则创建占位图）
+-    2. 用 Pillow 叠加马斯克签名 PNG
+-    3. 叠加活动 Logo PNG
+-    4. 底部叠加一句结语
+-    5. 保存到 output_dir
+-    6. 返回路径
+-
+-    参数:
+-        camera_best_photo_path: 摄像头最佳帧路径（可选，None 时创建占位图）
+-        review: 评审报告 dict（含 closing 字段，可选）
+-        output_dir: 输出目录
+-
+-    返回:
+-        合成后的合影文件绝对路径
+-    """
++    """合成合影。"""
++    print_step("PHOTO", "=== 合影合成 ===")
+     os.makedirs(output_dir, exist_ok=True)
+-
++    t0 = time.time()
++
++    # 兼容 session 对象
++    session = None
++    if hasattr(camera_best_photo_path, 'photo_path'):
++        session = camera_best_photo_path
++        camera_best_photo_path = session.photo_path
++        if review is None and session:
++            review = session.review
++        if qr_path is None and session:
++            qr_path = session.qr_path
++
++    # ---- AI 生图 ----
++    if camera_best_photo_path and os.path.isfile(camera_best_photo_path) and os.getenv("IMG_GEN_API_KEY"):
++        print_debug("PHOTO", "尝试 AI 生图...")
++        try:
++            from pipelines.output.img_gen_engine import generate_portrait_card
++            ai_path = await generate_portrait_card(camera_best_photo_path, review=review, qr_path=qr_path, output_dir=output_dir)
++            if ai_path and os.path.isfile(ai_path):
++                elapsed = time.time() - t0
++                print_step("PHOTO", f"AI 卡完成，耗时 {elapsed:.1f}s")
++                return ai_path
++        except Exception as e:
++            print_error("PHOTO", f"AI 失败: {e}")
++
++    # ---- Pillow 合成 ----
++    print_step("PHOTO", ">> Pillow 合成赛博 Polaroid")
++    card = Image.new("RGB", (W, H), DARK_BLUE)
++    draw = ImageDraw.Draw(card)
++
++    # 1. 背景渐变效果（逐条渐变线）
++    for y in range(H):
++        ratio = y / H
++        r = int(DARK_BLUE[0] * (1 - ratio) + 8 * ratio)
++        g = int(DARK_BLUE[1] * (1 - ratio) + 10 * ratio)
++        b = int(DARK_BLUE[2] * (1 - ratio) + 30 * ratio)
++        draw.line([(0, y), (W, y)], fill=(r, g, b))
++
++    # 2. 科技网格（半透明线条）
++    grid_color = (30, 50, 100, 80)
++    for x in range(0, W, 60):
++        draw.line([(x, 0), (x, H)], fill=(20, 35, 70), width=1)
++    for y in range(0, H, 60):
++        draw.line([(0, y), (W, y)], fill=(20, 35, 70), width=1)
++
++    # 3. 卡片主体（深色半透明 Polaroid 白卡效果的变体）
++    card_w = W - 60
++    card_h = H - 60
++    card_x = 30
++    card_y = 30
++    draw.rounded_rectangle([card_x, card_y, card_x + card_w, card_y + card_h],
++                          radius=24, fill=(20, 28, 68), outline=(40, 60, 120), width=2)
++
++    # 4. 内发光边框
++    glow_rect = [card_x + 8, card_y + 8, card_x + card_w - 8, card_y + card_h - 8]
++    draw.rounded_rectangle(glow_rect, radius=18, outline=(30, 50, 110), width=1)
++
++    # 5. 顶部霓虹标题栏
++    title_bar_y = card_y + 20
++    draw.rounded_rectangle([card_x + 20, title_bar_y, card_x + card_w - 20, title_bar_y + 60],
++                          radius=8, fill=(25, 35, 80), outline=NEON_CYAN, width=1)
++
++    title_font = _font(48, bold=True)
++    draw.text((W // 2, title_bar_y + 30), "传 奇 评 审 亭",
++              fill=NEON_CYAN, font=title_font, anchor="mm")
++
++    # 6. 照片区（带霓虹边框）
++    px1, py1, px2, py2 = PHOTO_BOX
++    photo_bg_rect = [px1 - 4, py1 - 4, px2 + 4, py2 + 4]
++    draw.rounded_rectangle(photo_bg_rect, radius=12, fill=(10, 15, 35),
++                          outline=NEON_PURPLE, width=2)
++
++    # 插入照片
++    has_photo = False
+     if camera_best_photo_path and os.path.isfile(camera_best_photo_path):
+         try:
+-            img = Image.open(camera_best_photo_path).convert("RGB")
+-        except Exception:
+-            img = Image.new("RGB", (OUTPUT_WIDTH, OUTPUT_HEIGHT), (30, 30, 30))
+-    else:
+-        logger.warning("摄像头最佳帧不存在，创建纯色占位图")
+-        img = Image.new("RGB", (OUTPUT_WIDTH, OUTPUT_HEIGHT), (30, 30, 30))
+-
+-    # 调整尺寸到标准输出
+-    img = img.resize((OUTPUT_WIDTH, OUTPUT_HEIGHT), Image.LANCZOS)
+-
+-    # 叠加签名
+-    img = _overlay_signature(img, SIGNATURE_PATH)
+-
+-    # 叠加 Logo
+-    img = _overlay_logo(img, LOGO_PATH)
+-
+-    # 叠加结语
+-    closing_text = review.get("closing", "") if review else ""
+-    if closing_text:
+-        img = _overlay_closing_text(img, closing_text)
+-
+-    filename = f"photo_{uuid.uuid4().hex[:8]}.jpg"
++            photo = Image.open(camera_best_photo_path).convert("RGB")
++            pw, ph = photo.size
++            tw = px2 - px1
++            th = py2 - py1
++            scale = max(tw / pw, th / ph)
++            nw = int(pw * scale)
++            nh = int(ph * scale)
++            photo = photo.resize((nw, nh), Image.LANCZOS)
++            left = (nw - tw) // 2
++            top = (nh - th) // 2
++            photo = photo.crop((left, top, left + tw, top + th))
++            card.paste(photo, (px1, py1))
++            has_photo = True
++        except Exception as e:
++            print_error("PHOTO", f"照片嵌入失败: {e}")
++
++    if not has_photo:
++        draw.text((px1 + tw // 2, py1 + th // 2), "◉ PHOTO",
++                  fill=DIM_WHITE, font=_font(48), anchor="mm")
++
++    # 7. 底部信息区
++    info_y = py2 + 30
++
++    # 语录（用 AI 评审的结语）
++    closing = (review or {}).get("closing", "") or "继续干，别停下来"
++    qf = _font(34)
++    draw.text((W // 2, info_y), f"「{closing}」", fill=WHITE, font=qf, anchor="mm")
++
++    # 分隔装饰线
++    line_y = info_y + 55
++    draw.line([(W // 2 - 200, line_y), (W // 2 + 200, line_y)],
++             fill=NEON_CYAN, width=1)
++    draw.line([(W // 2 - 190, line_y + 3), (W // 2 + 190, line_y + 3)],
++             fill=(30, 50, 110), width=1)
++
++    # 签名
++    sig_y = line_y + 35
++    sig_font = _font(26)
++    draw.text((W - 80, sig_y), "— AI评委：马斯克", fill=GRAY, font=sig_font, anchor="rt")
++
++    # 8. 二维码（左下角）
++    if qr_path and os.path.isfile(qr_path):
++        try:
++            qr_img = Image.open(qr_path).convert("RGBA")
++            qr_size = 130
++            qr_img = qr_img.resize((qr_size, qr_size), Image.LANCZOS)
++            # 白底半透明
++            qr_bg_x = card_x + 25
++            qr_bg_y = sig_y + 40
++            draw.rounded_rectangle([qr_bg_x - 8, qr_bg_y - 8,
++                                    qr_bg_x + qr_size + 8, qr_bg_y + qr_size + 8],
++                                  radius=8, fill=(20, 28, 68), outline=NEON_CYAN, width=1)
++            card.paste(qr_img, (qr_bg_x, qr_bg_y), qr_img)
++        except Exception as e:
++            print_debug("PHOTO", f"二维码嵌入失败: {e}")
++
++    # 9. 认证章（右下角）
++    stamp_text = "AI评审认证"
++    sf = _font(18)
++    sb = draw.textbbox((0, 0), stamp_text, font=sf)
++    sw = sb[2] - sb[0] + 24
++    sh = sb[3] - sb[1] + 14
++    sx = W - 40 - sw
++    sy = sig_y + 55
++    draw.rounded_rectangle([sx, sy, sx + sw, sy + sh], radius=10,
++                          outline=NEON_ORANGE, width=2)
++    draw.text((sx + 12, sy + 7), stamp_text, fill=NEON_ORANGE, font=sf)
++
++    # 10. 角落装饰
++    corners = [
++        (card_x + 10, card_y + 10, card_x + 30, card_y + 10),
++        (card_x + card_w - 10, card_y + 10, card_x + card_w - 30, card_y + 10),
++        (card_x + 10, card_y + card_h - 10, card_x + 30, card_y + card_h - 10),
++        (card_x + card_w - 10, card_y + card_h - 10, card_x + card_w - 30, card_y + card_h - 10),
++    ]
++    for i, (x1, y1, x2, y2) in enumerate(corners):
++        if i < 2:
++            draw.line([(x1, y1), (x2, y2)], fill=NEON_CYAN, width=2)
++        else:
++            draw.line([(x1, y1), (x2, y2)], fill=NEON_PURPLE, width=2)
++
++    # 保存
++    filename = f"polaroid_{uuid.uuid4().hex[:8]}.jpg"
+     output_path = os.path.join(output_dir, filename)
+-    img.save(output_path, quality=95)
++    card.save(output_path, quality=95)
+ 
+-    logger.info("合影已合成: %s", output_path)
++    elapsed = time.time() - t0
++    print_file_size("PHOTO", output_path)
++    print_step("PHOTO", f"赛博 Polaroid 完成，耗时 {elapsed:.1f}s")
+     return output_path
+ 
+ 
+-def _overlay_signature(
+-    img: Image.Image,
+-    signature_path: str = SIGNATURE_PATH,
+-) -> Image.Image:
+-    """右下角叠加马斯克签名 PNG。"""
+-    try:
+-        sig = Image.open(signature_path).convert("RGBA")
+-        sig = sig.resize(SIGNATURE_SIZE, Image.LANCZOS)
+-        # 右下角，留边距 50px
+-        position = (OUTPUT_WIDTH - SIGNATURE_SIZE[0] - 50, 50)
+-        img = img.copy()
+-        img.paste(sig, position, sig)
+-    except FileNotFoundError:
+-        logger.info("签名素材不存在，跳过: %s", signature_path)
+-    return img
+-
+-
+-def _overlay_logo(
+-    img: Image.Image,
+-    logo_path: str = LOGO_PATH,
+-) -> Image.Image:
+-    """左上角叠加活动 Logo PNG。"""
+-    try:
+-        logo = Image.open(logo_path).convert("RGBA")
+-        logo = logo.resize(LOGO_SIZE, Image.LANCZOS)
+-        position = (50, 50)
+-        img = img.copy()
+-        img.paste(logo, position, logo)
+-    except FileNotFoundError:
+-        logger.info("Logo 素材不存在，跳过: %s", logo_path)
+-    return img
+-
+-
+-def _overlay_closing_text(img: Image.Image, text: str) -> Image.Image:
+-    """底部居中叠加结语文字。"""
+-    draw = ImageDraw.Draw(img)
+-
+-    # 尝试加载字体，失败则用默认
+-    try:
+-        font = ImageFont.truetype(
+-            "C:/Windows/Fonts/msyh.ttc", CLOSING_FONT_SIZE
+-        )
+-    except (IOError, OSError):
+-        font = ImageFont.load_default()
+-
+-    # 获取文字尺寸
+-    bbox = draw.textbbox((0, 0), text, font=font)
+-    text_width = bbox[2] - bbox[0]
+-    x = (OUTPUT_WIDTH - text_width) // 2
+-    y = CLOSING_POSITION[1]
+-
+-    # 黑色阴影底边提升可读性
+-    shadow_offset = 2
+-    draw.text((x + shadow_offset, y + shadow_offset), text, font=font, fill=(0, 0, 0))
+-    draw.text((x, y), text, font=font, fill=CLOSING_COLOR)
+-
+-    return img
++def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
++    fonts = [
++        ("C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc", size),
++        ("C:/Windows/Fonts/simhei.ttf", size),
++        ("C:/Windows/Fonts/simsun.ttc", size),
++    ]
++    for path, sz in fonts:
++        if os.path.isfile(path):
++            try:
++                return ImageFont.truetype(path, sz)
++            except Exception:
++                continue
++    return ImageFont.load_default()
+diff --git a/backend/pipelines/output/qr_generator.py b/backend/pipelines/output/qr_generator.py
+index 0b75401..4c22c34 100644
+--- a/backend/pipelines/output/qr_generator.py
++++ b/backend/pipelines/output/qr_generator.py
+@@ -7,10 +7,12 @@
+ import os
+ import uuid
+ import logging
++import time
+ 
+ import qrcode
+ 
+ from models.session import BoothSession
++from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -33,9 +35,13 @@ async def generate_qr(session: BoothSession) -> str:
+     返回:
+         二维码图片文件绝对路径
+     """
++    print_step("QR", "=== 二维码生成 ===")
+     os.makedirs(QR_OUTPUT_DIR, exist_ok=True)
+ 
++    t0 = time.time()
+     h5_url = await _resolve_h5_url(session)
++    print_debug("QR", f"H5 URL: {h5_url}")
++
+     filename = f"qr_{uuid.uuid4().hex[:8]}.png"
+     output_path = os.path.join(QR_OUTPUT_DIR, filename)
+ 
+@@ -51,24 +57,22 @@ async def generate_qr(session: BoothSession) -> str:
+     img = qr.make_image(fill_color="black", back_color="white")
+     img.save(output_path)
+ 
+-    logger.info("二维码已生成: %s -> %s", output_path, h5_url)
++    elapsed = time.time() - t0
++    print_file_size("QR", output_path)
++    print_step("QR", f"二维码生成完成，耗时 {elapsed:.1f}s")
+     return output_path
+ 
+ 
+ async def _resolve_h5_url(session: BoothSession) -> str:
+-    """
+-    解析 H5 页面的 URL。
+-
+-    当前版本返回本地路径占位。
+-    未来版本应上传到静态托管并返回完整 URL。
+-    """
+-    return _upload_h5(session.review or {}, session)
++    """生成 H5 页面的完整 URL（用公网地址，手机才能扫码访问）。"""
++    public_host = os.getenv("PUBLIC_HOST", "http://localhost:8000")
++    return f"{public_host.rstrip('/')}/static/h5/review_{session.session_id}.html"
+ 
+ 
+ async def _upload_h5(review: dict, session: BoothSession) -> str:
+     """
+     上传 H5 到静态托管，返回 URL。
+ 
+-    当前版本返回本地路径占位。
++    当前版本返回静态文件 URL（H5 由 generate_h5 生成到 data/h5/）。
+     """
+-    return f"/h5/{session.session_id}.html"
++    return f"/static/h5/review_{session.session_id}.html"
+diff --git a/backend/pipelines/tts/tts_engine.py b/backend/pipelines/tts/tts_engine.py
+index c2029d8..2ad00db 100644
+--- a/backend/pipelines/tts/tts_engine.py
++++ b/backend/pipelines/tts/tts_engine.py
+@@ -8,9 +8,12 @@ Edge TTS 播报引擎。
+ import os
+ import uuid
+ import logging
++import time
+ 
+ import edge_tts
+ 
++from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
++
+ logger = logging.getLogger(__name__)
+ 
+ VOICE = "zh-CN-YunxiNeural"  # 沉稳男声
+@@ -35,16 +38,23 @@ async def synthesize_speech(
+     返回:
+         生成的音频文件绝对路径
+     """
++    print_step("TTS", "=== TTS 语音合成 ===")
+     os.makedirs(output_dir, exist_ok=True)
+-    filename = f"review_{uuid.uuid4().hex[:8]}.mp3"
+-    output_path = os.path.join(output_dir, filename)
+ 
+     text = render_for_tts(review)
++    print_data("TTS", "TTS 文本", text)
++    print_debug("TTS", f"TTS 文本长度: {len(text)} 字符")
++
++    filename = f"review_{uuid.uuid4().hex[:8]}.mp3"
++    output_path = os.path.join(output_dir, filename)
+ 
++    t0 = time.time()
+     communicate = edge_tts.Communicate(text, VOICE)
+     await communicate.save(output_path)
++    elapsed = time.time() - t0
+ 
+-    logger.info("TTS 音频已生成: %s", output_path)
++    print_file_size("TTS", output_path)
++    print_step("TTS", f"TTS 合成完成，耗时 {elapsed:.1f}s")
+     return output_path
+ 
+ 
+diff --git a/backend/pipelines/video/camera.py b/backend/pipelines/video/camera.py
+index 7b4f9ac..7be48ec 100644
+--- a/backend/pipelines/video/camera.py
++++ b/backend/pipelines/video/camera.py
+@@ -12,6 +12,8 @@ from typing import Optional
+ import cv2
+ import numpy as np
+ 
++from debug_utils import print_debug, print_step, print_error
++
+ logger = logging.getLogger(__name__)
+ 
+ CAMERA_INDEX = 0
+@@ -21,8 +23,11 @@ class CameraCapture:
+     """逐帧捕获摄像头画面，支持 5fps 采样存储"""
+ 
+     def __init__(self, index: int = 0):
+-        self.cap = cv2.VideoCapture(index)
++        print_debug("CAMERA", f"打开摄像头 index={index}")
++        # 使用 DSHOW 后端加速 Windows 上的摄像头初始化（从 5s→0.5s）
++        self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+         if not self.cap.isOpened():
++            print_error("CAMERA", f"无法打开摄像头 (index={index})")
+             raise RuntimeError(f"无法打开摄像头 (index={index})")
+ 
+         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+@@ -30,9 +35,8 @@ class CameraCapture:
+ 
+         actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+         actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+-        logger.info("摄像头已打开: %dx%d @ %.1f fps",
+-                     actual_w, actual_h,
+-                     self.cap.get(cv2.CAP_PROP_FPS))
++        actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
++        print_step("CAMERA", f"摄像头已打开: {actual_w}x{actual_h} @ {actual_fps:.1f} fps")
+ 
+     async def capture_frames(self, duration: int = 120, fps: int = 5) -> list:
+         """录制 duration 秒，每秒采样 fps 帧，返回帧列表
+@@ -49,21 +53,29 @@ class CameraCapture:
+         interval = 1.0 / fps
+         total_frames = duration * fps
+ 
+-        logger.info("开始摄像头录制: %d 秒, %d fps, 预期 %d 帧",
+-                     duration, fps, total_frames)
++        print_step("CAMERA", f"摄像头录制: {duration}s, {fps}fps, 预期 {total_frames} 帧")
++        import time
++        t0 = time.time()
+ 
+         for i in range(total_frames):
+             ret, frame = self.cap.read()
+             if ret:
+-                # 保存原始分辨率帧
+                 frames.append(frame)
+             else:
+                 logger.warning("第 %d 帧读取失败", i)
++                print_error("CAMERA", f"第 {i} 帧读取失败")
++
++            # 每 30 帧打印一次进度
++            if i > 0 and i % 30 == 0:
++                elapsed = time.time() - t0
++                pct = i / total_frames * 100
++                print_debug("CAMERA", f"录制进度: {pct:.0f}% ({i}/{total_frames} 帧, {elapsed:.0f}s)")
+ 
+             # 让出事件循环，防止阻塞
+             await asyncio.sleep(interval)
+ 
+-        logger.info("摄像头录制完成: 实际 %d 帧", len(frames))
++        elapsed = time.time() - t0
++        print_step("CAMERA", f"录制完成: 实际 {len(frames)} 帧, 耗时 {elapsed:.1f}s")
+         return frames
+ 
+     def get_best_photo(self, frames: list) -> Optional[np.ndarray]:
+diff --git a/backend/pipelines/video/emotion_analyzer.py b/backend/pipelines/video/emotion_analyzer.py
+index b710d78..cd6fc79 100644
+--- a/backend/pipelines/video/emotion_analyzer.py
++++ b/backend/pipelines/video/emotion_analyzer.py
+@@ -11,6 +11,8 @@ from typing import Any
+ 
+ import numpy as np
+ 
++from debug_utils import print_debug, print_step, print_data, print_error
++
+ logger = logging.getLogger(__name__)
+ 
+ # 关键 blendshape 名称（ARKit 标准 52 个中选 8 个）
+@@ -61,11 +63,15 @@ def extract_emotion_signals(frame_features: list[dict]) -> dict[str, Any]:
+     valid_frames = [f for f in frame_features if f.get("face_detected")]
+     total_frames = len(frame_features) if frame_features else 1
+ 
++    print_step("EMOTION", f"情绪分析: {len(valid_frames)}/{total_frames} 帧检测到人脸")
++
+     if not valid_frames:
+         logger.warning("所有帧均未检测到人脸")
++        print_error("EMOTION", "所有帧均未检测到人脸")
+         return _empty_result("未检测到人脸")
+ 
+     face_detected_ratio = len(valid_frames) / max(total_frames, 1)
++    print_debug("EMOTION", f"人脸检测率: {face_detected_ratio:.0%}")
+ 
+     # 2. 提取 blendshape 均值
+     blendshape_means = _compute_blendshape_means(valid_frames)
+@@ -107,14 +113,19 @@ def extract_emotion_signals(frame_features: list[dict]) -> dict[str, Any]:
+ def _compute_blendshape_means(valid_frames: list[dict]) -> dict[str, float]:
+     """计算所有有效帧中各 blendshape 的均值"""
+     accum: dict[str, list[float]] = {}
++    format_logged = False
+     for frame in valid_frames:
+         bs_list = frame.get("blendshapes")
+         if not bs_list:
+             continue
+         for bs in bs_list:
+             # 兼容 MediaPipe 对象 (.category_name) 和 dict 格式 (get)
+-            name = bs.category_name if hasattr(bs, "category_name") else bs.get("category_name", "")
+-            score = bs.score if hasattr(bs, "score") else bs.get("score", 0.0)
++            is_obj = hasattr(bs, "category_name")
++            if not format_logged:
++                print_debug("EMOTION", f"blendshape 格式: {'MediaPipe 对象' if is_obj else 'dict'}")
++                format_logged = True
++            name = bs.category_name if is_obj else bs.get("category_name", "")
++            score = bs.score if is_obj else bs.get("score", 0.0)
+             accum.setdefault(name, []).append(score)
+ 
+     return {name: float(np.mean(scores)) for name, scores in accum.items()}
+@@ -186,20 +197,31 @@ def _compute_gaze_percentage(valid_frames: list[dict]) -> float:
+ def _compute_head_stability(valid_frames: list[dict]) -> float:
+     """计算头部稳定度（0-100）
+ 
+-    基于 yaw 角的标准差：分数 = 100 - yaw_std * 2
++    综合 yaw（左右转头）、pitch（点头）、roll（歪头）三个轴的抖动：
++    取三轴标准差的均方根，分数 = 100 - 合并抖动 * 2。
+     头部晃动越大，分数越低。
++
++    注意：旧实现只用 yaw 一个轴，导致点头/歪头/移动时仍判"平稳"。
+     """
+-    yaw_values = []
++    yaw_values: list[float] = []
++    pitch_values: list[float] = []
++    roll_values: list[float] = []
+     for frame in valid_frames:
+         pose = frame.get("head_pose")
+         if pose is not None:
+             yaw_values.append(pose.get("yaw", 0.0))
++            pitch_values.append(pose.get("pitch", 0.0))
++            roll_values.append(pose.get("roll", 0.0))
+ 
+     if len(yaw_values) < 2:
+         return 100.0
+ 
+     yaw_std = float(np.std(yaw_values))
+-    score = 100.0 - yaw_std * 2.0
++    pitch_std = float(np.std(pitch_values))
++    roll_std = float(np.std(roll_values))
++    # 三轴标准差的均方根，综合反映任意方向的头部晃动
++    combined_std = (yaw_std ** 2 + pitch_std ** 2 + roll_std ** 2) ** 0.5
++    score = 100.0 - combined_std * 2.0
+     return max(0.0, min(100.0, score))
+ 
+ 
+diff --git a/backend/pipelines/video/mediapipe_engine.py b/backend/pipelines/video/mediapipe_engine.py
+index 3051d32..67d3c43 100644
+--- a/backend/pipelines/video/mediapipe_engine.py
++++ b/backend/pipelines/video/mediapipe_engine.py
+@@ -12,6 +12,8 @@ from typing import Optional
+ import cv2
+ import numpy as np
+ 
++from debug_utils import print_debug, print_step, print_data, print_error
++
+ logger = logging.getLogger(__name__)
+ 
+ # 模型文件路径（相对此文件所在目录）
+@@ -21,18 +23,21 @@ MODEL_DOWNLOAD_URL = (
+     "face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
+ )
+ 
+-# 头部姿态估计使用的 5 个稳定关键点索引
+-# MediaPipe FaceLandmarker 478 点模型中选取：
+-#   鼻尖, 下巴, 右眼外眼角, 左眼外眼角, 上唇中点
+-HEAD_POSE_LANDMARK_IDS = [1, 152, 263, 33, 13]
++# 头部姿态估计使用的 6 个稳定关键点索引
++# 注意：cv2.solvePnP 的 SOLVEPNP_ITERATIVE(DLT) 至少需要 6 个点，少于 6 会抛错。
++# MediaPipe FaceLandmarker 478 点模型中选取经典 6 点：
++#   鼻尖, 下巴, 右眼外眼角, 左眼外眼角, 右嘴角, 左嘴角
++HEAD_POSE_LANDMARK_IDS = [1, 152, 263, 33, 291, 61]
+ 
+-# 对应 3D 模型坐标（从 MediaPipe 规范正面模型采样，单位 mm）
++# 对应 3D 模型坐标（通用正面人脸模型，单位 mm）。
++# x 正方向对应图像右侧，与上面索引一一对应。
+ _HEAD_POSE_MODEL_POINTS = np.array([
+-    [0.0, 0.0, 0.0],        # 鼻尖 (landmark 1)
+-    [0.0, -330.0, -65.0],   # 下巴 (landmark 152)
+-    [225.0, 170.0, -135.0], # 右眼外眼角 (landmark 263)
+-    [-225.0, 170.0, -135.0],# 左眼外眼角 (landmark 33)
+-    [0.0, -150.0, -135.0],  # 上唇中点 (landmark 13)
++    [0.0, 0.0, 0.0],          # 鼻尖 (landmark 1)
++    [0.0, -330.0, -65.0],     # 下巴 (landmark 152)
++    [225.0, 170.0, -135.0],   # 右眼外眼角 (landmark 263, 图像右, +x)
++    [-225.0, 170.0, -135.0],  # 左眼外眼角 (landmark 33, 图像左, -x)
++    [150.0, -150.0, -125.0],  # 右嘴角 (landmark 291, 图像右, +x)
++    [-150.0, -150.0, -125.0], # 左嘴角 (landmark 61, 图像左, -x)
+ ], dtype=np.float64)
+ 
+ 
+@@ -49,14 +54,22 @@ class FaceLandmarkerEngine:
+                 "请手动下载后放置到该路径:\n%s",
+                 model_path, MODEL_DOWNLOAD_URL
+             )
++            print_error("MEDIAPIPE", f"模型文件未找到: {model_path}")
+             # 不崩溃，process_frame 会在检测器为 None 时优雅返回
+             return
+ 
++        print_step("MEDIAPIPE", f"加载模型: {model_path}")
+         try:
+             from mediapipe.tasks import python
+             from mediapipe.tasks.python import vision
+ 
+-            base_options = python.BaseOptions(model_asset_path=model_path)
++            # 用 buffer 而非 path 加载：MediaPipe 的 C++ 文件加载器无法打开
++            # 含非 ASCII 字符的路径（如本项目位于中文目录下），
++            # 读字节交给 Python 处理可规避该问题。
++            with open(model_path, "rb") as f:
++                model_buffer = f.read()
++            print_debug("MEDIAPIPE", f"模型文件读取: {len(model_buffer)} 字节")
++            base_options = python.BaseOptions(model_asset_buffer=model_buffer)
+             options = vision.FaceLandmarkerOptions(
+                 base_options=base_options,
+                 running_mode=vision.RunningMode.VIDEO,
+@@ -66,11 +79,13 @@ class FaceLandmarkerEngine:
+                 min_tracking_confidence=0.5,
+             )
+             self._detector = vision.FaceLandmarker.create_from_options(options)
+-            logger.info("FaceLandmarker 引擎初始化完成")
++            print_step("MEDIAPIPE", "FaceLandmarker 引擎初始化完成")
+         except ImportError:
+             logger.warning("mediapipe 库未安装，FaceLandmarker 不可用")
++            print_error("MEDIAPIPE", "mediapipe 库未安装")
+         except Exception as e:
+             logger.error("FaceLandmarker 初始化失败: %s", e)
++            print_error("MEDIAPIPE", f"初始化失败: {e}")
+ 
+     @property
+     def is_ready(self) -> bool:
+@@ -107,9 +122,6 @@ class FaceLandmarkerEngine:
+             return result
+ 
+         try:
+-            from mediapipe.framework.formats import landmark_pb2
+-            from mediapipe.tasks.python.vision.core import vision_task_running_mode
+-
+             # 转为 mp.Image
+             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+             mp_image = self._to_mp_image(rgb_frame)
+@@ -130,6 +142,7 @@ class FaceLandmarkerEngine:
+ 
+             # 提取 52 个 blendshapes
+             if detection_result.face_blendshapes:
++                bs_count = len(detection_result.face_blendshapes[0])
+                 result["blendshapes"] = [
+                     {
+                         "category_name": bs.category_name,
+@@ -138,23 +151,34 @@ class FaceLandmarkerEngine:
+                     for bs in detection_result.face_blendshapes[0]
+                 ]
+ 
+-            # 估算头部姿态
++            # 估算头部姿态（需用真实图像尺寸把归一化坐标还原为像素坐标）
++            h, w = frame.shape[:2]
+             landmarks_array = np.array(result["landmarks"])
+-            result["head_pose"] = self.estimate_head_pose(landmarks_array)
++            result["head_pose"] = self.estimate_head_pose(
++                landmarks_array, image_width=w, image_height=h,
++            )
+ 
+         except Exception as e:
+             logger.error("帧处理异常: %s", e)
++            print_error("MEDIAPIPE", f"帧处理异常: {e}")
+ 
+         return result
+ 
+-    def estimate_head_pose(self, landmarks: np.ndarray) -> dict:
++    def estimate_head_pose(
++        self,
++        landmarks: np.ndarray,
++        image_width: int = 640,
++        image_height: int = 480,
++    ) -> dict:
+         """从 478 个关键点估算头部欧拉角
+ 
+         使用 5 个稳定特征点 + cv2.solvePnP 求解旋转向量，
+         转换为 yaw（偏航）、pitch（俯仰）、roll（翻滚）角度。
+ 
+         参数:
+-            landmarks: shape (478, 3) 的关键点数组
++            landmarks: shape (478, 3) 的关键点数组（x, y 为归一化坐标 [0, 1]）
++            image_width: 原始帧宽度（像素），用于把归一化坐标还原为像素坐标
++            image_height: 原始帧高度（像素）
+ 
+         返回:
+             {"yaw": float, "pitch": float, "roll": float}
+@@ -166,17 +190,17 @@ class FaceLandmarkerEngine:
+         if landmarks.shape[0] < max(HEAD_POSE_LANDMARK_IDS) + 1:
+             return default
+ 
+-        # 提取 2D 图像点（x, y 像素坐标）
+-        # 注意 landmarks 中 x, y 是归一化坐标 [0, 1]，需乘以图像尺寸
+-        # 但 solvePnP 可以用归一化坐标配合适当的相机内参
+-        # 为简化，假设相机内参为单位矩阵，用归一化坐标求解相对姿态
++        # 提取 2D 图像点并还原为像素坐标
++        # landmarks 的 x, y 是归一化坐标 [0, 1]，乘以图像尺寸得到像素坐标，
++        # 这样才能与下面以像素为单位的相机内参匹配，solvePnP 才有意义。
+         image_points = np.array([
+-            landmarks[i][:2] for i in HEAD_POSE_LANDMARK_IDS
++            [landmarks[i][0] * image_width, landmarks[i][1] * image_height]
++            for i in HEAD_POSE_LANDMARK_IDS
+         ], dtype=np.float64)
+ 
+-        # 相机内参（近似，使用归一化坐标的合理假设）
+-        focal_length = 1.0
+-        center = (0.5, 0.5)
++        # 相机内参近似：焦距取图像宽度（常用经验值），主点取图像中心。
++        focal_length = float(image_width)
++        center = (image_width / 2.0, image_height / 2.0)
+         camera_matrix = np.array([
+             [focal_length, 0, center[0]],
+             [0, focal_length, center[1]],
+@@ -218,14 +242,23 @@ class FaceLandmarkerEngine:
+             pitch = np.arctan2(-rmat[2, 0], sy)
+             roll = 0.0
+ 
++        roll_deg = float(np.degrees(roll))
++        # OpenCV 相机坐标系(Y 向下) 与正面人脸模型(Y 向上) 的约定差异，
++        # 会让头部正立时 roll 落在 ±180 附近。把它折叠回 0 附近，
++        # 使数值直观（路演者头部 roll 通常很小）。yaw/pitch 不受影响。
++        if roll_deg > 90:
++            roll_deg -= 180
++        elif roll_deg < -90:
++            roll_deg += 180
++
+         return {
+             "yaw": float(np.degrees(yaw)),
+             "pitch": float(np.degrees(pitch)),
+-            "roll": float(np.degrees(roll)),
++            "roll": roll_deg,
+         }
+ 
+     @staticmethod
+     def _to_mp_image(rgb_frame: np.ndarray):
+         """将 RGB numpy 数组转为 MediaPipe Image"""
+-        from mediapipe.image import Image, ImageFormat
+-        return Image(image_format=ImageFormat.SRGB, data=rgb_frame)
++        import mediapipe as mp
++        return mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+diff --git a/backend/pipelines/video/processor.py b/backend/pipelines/video/processor.py
+index 3e21fc0..a362e43 100644
+--- a/backend/pipelines/video/processor.py
++++ b/backend/pipelines/video/processor.py
+@@ -1,86 +1,134 @@
+ """
+ 视频管线主处理器
+ 
+-编排 CameraCapture → FaceLandmarkerEngine → emotion_analyzer 的完整流程，
++从前端浏览器传来的 Base64 JPEG 帧 → FaceLandmarkerEngine → emotion_analyzer，
+ 对外暴露 session 级别的接口供 PipelineOrchestrator 调用。
+ """
+ 
++import base64
+ import logging
++import os
+ import time
++import uuid
++from io import BytesIO
++
++import cv2
++import numpy as np
++from PIL import Image
+ 
+ from models.session import BoothSession
+ from models.performance import EmotionReport
++from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
+ 
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _base64_to_cv2(base64_str: str) -> np.ndarray | None:
++    """将 Base64 JPEG 字符串转为 OpenCV BGR numpy 数组。"""
++    try:
++        # 去掉 data:image/jpeg;base64, 前缀（如果有）
++        if "," in base64_str:
++            base64_str = base64_str.split(",", 1)[1]
++        img_data = base64.b64decode(base64_str)
++        np_arr = np.frombuffer(img_data, np.uint8)
++        return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
++    except Exception as e:
++        print_error("VIDEO", f"Base64 解码失败: {e}")
++        return None
++
++
+ async def analyze_emotion(session: BoothSession) -> dict | None:
+-    """视频管线入口：摄像头 → FaceLandmarker → 情绪提取
++    """视频管线入口：前端帧 → FaceLandmarker → 情绪提取
+ 
+     参数:
+-        session: 评审会话（从中读取配置，写入分析结果）
++        session: 评审会话（含前端传来的 Base64 视频帧列表）
+ 
+     返回:
+         EmotionReport 的 dict 形式，失败返回 None
+     """
++    t_pipeline = time.time()
++    print_step("VIDEO", "=== 视频管线启动 ===")
+     try:
+-        from pipelines.video.camera import CameraCapture
+         from pipelines.video.mediapipe_engine import FaceLandmarkerEngine
+         from pipelines.video.emotion_analyzer import extract_emotion_signals
+ 
+-        # 1. 初始化摄像头 & 录制
+-        camera = CameraCapture(index=0)
+-        try:
+-            frames = await camera.capture_frames(duration=120, fps=5)
+-        finally:
+-            camera.release()
++        # 1. 获取帧列表
++        raw_frames = session.video_frames or []
++        if not raw_frames:
++            session.error = "前端没有传视频帧过来（摄像头可能被拒绝）"
++            print_error("VIDEO", "video_frames 为空，前端可能没有传帧")
++            return None
++
++        print_debug("VIDEO", f"前端传来 {len(raw_frames)} 帧，解码中...")
++
++        # 2. 解码 Base64 → OpenCV 图像
++        t0 = time.time()
++        frames = []
++        first_frame = None
++        for i, b64 in enumerate(raw_frames):
++            frame = _base64_to_cv2(b64)
++            if frame is not None:
++                frames.append(frame)
++                if first_frame is None:
++                    first_frame = frame
++
++        elapsed = time.time() - t0
++        print_debug("VIDEO", f"解码完成: {len(frames)} 帧有效，耗时 {elapsed:.2f}s")
+ 
+         if not frames:
+-            session.error = "摄像头未捕获到任何帧"
++            session.error = "所有前端帧解码失败"
++            print_error("VIDEO", "所有帧解码失败")
+             return None
+ 
+-        # 保存最佳合影帧
+-        best_photo = camera.get_best_photo(frames)
+-        if best_photo is not None:
+-            # 降采样到 720p 用于分析用副本
+-            h, w = best_photo.shape[:2]
+-            if h > 720:
+-                scale = 720.0 / h
+-                new_w = int(w * scale)
+-                new_h = 720
+-                # 保持原始帧用于分析，保存路径由上层负责
+-                logger.info("最佳合影帧尺寸: %dx%d, 备选降采样: %dx%d",
+-                            w, h, new_w, new_h)
+-
+-        # 2. 初始化 FaceLandmarker
++        # 3. 保存第一帧作为最佳合影帧
++        if first_frame is not None:
++            h, w = first_frame.shape[:2]
++            print_debug("VIDEO", f"第一帧尺寸: {w}x{h}")
++            photo_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "photos")
++            os.makedirs(photo_dir, exist_ok=True)
++            best_frame_path = os.path.join(photo_dir, f"best_frame_{uuid.uuid4().hex[:8]}.jpg")
++            cv2.imwrite(best_frame_path, first_frame)
++            session.photo_path = best_frame_path
++            print_debug("VIDEO", f"最佳帧已保存: {best_frame_path}")
++            print_file_size("VIDEO", best_frame_path)
++
++        # 4. 初始化 FaceLandmarker
++        print_step("VIDEO", ">> FaceLandmarker 初始化")
+         engine = FaceLandmarkerEngine()
+         if not engine.is_ready:
+-            session.error = "FaceLandmarker 未就绪（模型文件缺失或 mediapipe 未安装）"
++            session.error = "FaceLandmarker 未就绪"
++            print_error("VIDEO", "FaceLandmarker 初始化失败")
+             return None
++        print_debug("VIDEO", "FaceLandmarker 就绪")
+ 
+-        # 3. 逐帧处理
++        # 5. 逐帧处理（降采样到 5fps 等价采样率）
++        print_step("VIDEO", f">> 逐帧面部检测 ({len(frames)} 帧)")
++        t0 = time.time()
+         frame_features = []
++        face_detected_count = 0
+         for i, frame in enumerate(frames):
+-            timestamp_ms = int(i * (1000 / 5))  # 5fps → 每帧 200ms 间隔
++            # 前端大约 5fps 传帧，模拟时间戳
++            timestamp_ms = int(i * 200)  # 200ms = 5fps
+             if i % 30 == 0:
+-                logger.debug("视频分析进度: %d/%d 帧", i + 1, len(frames))
+-
+-            # 降采样至 720p 用于分析，提升性能
+-            h, w = frame.shape[:2]
+-            if h > 720:
+-                scale = 720.0 / h
+-                new_w = int(w * scale)
+-                analysis_frame = frame  # 保持原帧，mediapipe 内部会处理
+-            else:
+-                analysis_frame = frame
+-
+-            result = engine.process_frame(analysis_frame, timestamp_ms)
++                print_debug("VIDEO", f"面部检测进度: {i+1}/{len(frames)} 帧 (已检测到脸部: {face_detected_count})")
++
++            result = engine.process_frame(frame, timestamp_ms)
++            if result.get("face_detected"):
++                face_detected_count += 1
+             frame_features.append(result)
+ 
+-        # 4. 情绪提取
++        face_ratio = face_detected_count / len(frames) * 100 if frames else 0
++        print_debug("VIDEO", f"面部检测完成，耗时 {time.time()-t0:.1f}s")
++        print_debug("VIDEO", f"面部检测率: {face_detected_count}/{len(frames)} ({face_ratio:.0f}%)")
++
++        # 6. 情绪提取
++        print_step("VIDEO", ">> 情绪指标提取")
++        t0 = time.time()
+         signals = extract_emotion_signals(frame_features)
++        print_debug("VIDEO", f"情绪提取完成，耗时 {time.time()-t0:.2f}s")
++        print_data("VIDEO", "情绪信号", signals)
+ 
+-        # 5. 构造 EmotionReport
++        # 7. 构造 EmotionReport
+         report = EmotionReport(
+             tension_index=signals.get("tension_index", 0.0),
+             smile_index=signals.get("smile_index", 0.0),
+@@ -91,13 +139,16 @@ async def analyze_emotion(session: BoothSession) -> dict | None:
+         ).model_dump()
+ 
+         session.emotion_report = report
+-        logger.info("视频情绪分析完成: %s", report.get("summary", ""))
++        print_step("VIDEO", f"=== 视频管线完成，总耗时 {time.time()-t_pipeline:.1f}s ===")
++        print_data("VIDEO", "emotion_report", report)
+         return report
+ 
+     except ImportError as e:
+         session.error = f"视频管线模块缺失: {e}"
++        print_error("VIDEO", f"模块缺失: {e}")
+         return None
+     except Exception as e:
+         session.error = f"视频分析异常: {e}"
++        print_error("VIDEO", f"异常: {e}")
+         logger.exception("视频分析异常")
+         return None
+diff --git a/backend/services/pipeline_orchestrator.py b/backend/services/pipeline_orchestrator.py
+index 1103f7a..357a2f1 100644
+--- a/backend/services/pipeline_orchestrator.py
++++ b/backend/services/pipeline_orchestrator.py
+@@ -3,13 +3,20 @@
+ 
+ 编排录音 → 分析（音频/视频/LLM 并行）→ 输出（合影/QR）的完整流程。
+ 每个阶段通过 SSE 推送进度，所有错误被捕获到 session.error 而非崩溃。
++
++设计要点:
++  - start_recording() 同时启动音视频录制（非先后）
++  - analyze() 同时停止音视频，然后并行分析已采集的数据
++  - 分析管线不再重新录制，直接用已采集的数据
+ """
+ 
+ import asyncio
++import time
+ from collections.abc import Callable, Coroutine
+ from typing import Any
+ 
+ from models.session import BoothSession
++from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
+ 
+ 
+ class PipelineOrchestrator:
+@@ -32,96 +39,179 @@ class PipelineOrchestrator:
+                 pass
+ 
+     # ------------------------------------------------------------------
+-    # 1. Recording — fire-and-forget, auto-stops after 120s
++    # 1. Recording — 同时录制音视频，fire-and-forget
+     # ------------------------------------------------------------------
+     async def start_recording(self) -> None:
+-        """启动录音和录像（并行运行，120s 后自动停止）。"""
++        """启动录音（前端负责传视频帧）。"""
++        print_step("ORCH", "=== 启动音频录制 ===")
+ 
+-        async def _record_both():
++        async def _record_audio():
++            t0 = time.time()
+             try:
+                 from pipelines.audio.recorder import record_audio
+ 
+-                audio_path = await record_audio(duration=120, sample_rate=16000)
++                from config import AUDIO_DURATION
++                print_debug("ORCH", f"开始录音({AUDIO_DURATION}s) — 用户可 End Early 提前结束")
++                audio_path = await record_audio(duration=AUDIO_DURATION, sample_rate=16000)
+                 self.session.audio_path = audio_path
+-            except ImportError:
+-                self.session.error = "录音模块不可用"
++                print_debug("ORCH", f"录音完成，耗时 {time.time()-t0:.1f}s")
++
++            except ImportError as e:
++                self.session.error = f"录音模块不可用: {e}"
++                print_error("ORCH", f"录音模块不可用: {e}")
+                 await self._do_notify()
+             except Exception as exc:
+                 self.session.error = f"录音异常: {exc}"
++                print_error("ORCH", f"录音异常: {exc}")
+                 await self._do_notify()
+ 
+-        self._recording_task = asyncio.create_task(_record_both())
++        self._recording_task = asyncio.create_task(_record_audio())
+ 
+     # ------------------------------------------------------------------
+-    # 2. Analysis — 3 pipelines run in parallel
++    # 2. Analysis — 停止录制 → 并行分析已采集的数据
+     # ------------------------------------------------------------------
+     async def analyze(self) -> None:
+-        """停止录音，并行运行三条分析管线。"""
++        """停止录音+录像，并行分析已采集的数据（不再重新录制）。"""
++        print_step("ORCH", "=== 停止录制 + 开始分析 ===")
+ 
+-        # Cancel recording if still running
++        # 先停止录制（保存已录的数据）
+         if self._recording_task and not self._recording_task.done():
+-            self._recording_task.cancel()
++            print_debug("ORCH", "停止录音和录像...")
+             try:
+-                await self._recording_task
+-            except asyncio.CancelledError:
+-                pass
++                # 停止录音（保留已采集的音频帧）
++                from pipelines.audio.recorder import stop_recording
++                await stop_recording()
++                print_debug("ORCH", "录音已停止")
++            except Exception as e:
++                print_error("ORCH", f"停止录音异常: {e}")
++
++            # 等待录制任务完成收尾
++            try:
++                await asyncio.wait_for(self._recording_task, timeout=5.0)
++            except asyncio.TimeoutError:
++                print_error("ORCH", "录制任务超时未完成，强制取消")
++                self._recording_task.cancel()
++            except Exception as e:
++                print_error("ORCH", f"等待录制任务完成时异常: {e}")
++
+             self._recording_task = None
++            print_debug("ORCH", "录制任务已结束")
++
++        # 日志：已采集的数据
++        print_data("ORCH", "audio_path", self.session.audio_path)
++        frame_count = len(self.session.video_frames) if self.session.video_frames else 0
++        print_data("ORCH", "前端传过来的视频帧数", frame_count)
+ 
++        # 并行分析管线
+         async def _audio():
++            t0 = time.time()
++            print_step("ORCH", "--- 音频管线启动 ---")
+             try:
+                 from pipelines.audio.processor import analyze_fluency
+ 
+                 self.session.fluency_report = await analyze_fluency(self.session)
++                elapsed = time.time() - t0
++                print_debug("ORCH", f"音频管线完成，耗时 {elapsed:.1f}s")
++                print_data("ORCH", "fluency_report", self.session.fluency_report)
+             except Exception as exc:
+                 self.session.error = f"音频分析异常: {exc}"
++                print_error("ORCH", f"音频分析异常: {exc}")
+             await self._do_notify()
+ 
+         async def _video():
++            t0 = time.time()
++            print_step("ORCH", "--- 视频管线启动 ---")
+             try:
+                 from pipelines.video.processor import analyze_emotion
+ 
+                 self.session.emotion_report = await analyze_emotion(self.session)
++                elapsed = time.time() - t0
++                print_debug("ORCH", f"视频管线完成，耗时 {elapsed:.1f}s")
++                print_data("ORCH", "emotion_report", self.session.emotion_report)
+             except Exception as exc:
+                 self.session.error = f"视频分析异常: {exc}"
++                print_error("ORCH", f"视频分析异常: {exc}")
+             await self._do_notify()
+ 
+         async def _llm():
++            t0 = time.time()
++            print_step("ORCH", "--- LLM 管线启动 ---")
+             try:
+                 from pipelines.llm.llm_engine import generate_review
+ 
+                 self.session.review = await generate_review(self.session)
++                elapsed = time.time() - t0
++                print_debug("ORCH", f"LLM 管线完成，耗时 {elapsed:.1f}s")
++                print_data("ORCH", "review", self.session.review)
+             except Exception as exc:
+                 self.session.error = f"LLM 评审异常: {exc}"
++                print_error("ORCH", f"LLM 评审异常: {exc}")
+             await self._do_notify()
+ 
+         async def _run_all():
++            print_debug("ORCH", "三管线并行分析已采集的数据...")
++            t0 = time.time()
+             await asyncio.gather(_audio(), _video(), _llm(), return_exceptions=True)
++            total = time.time() - t0
++            print_step("ORCH", f"=== 三管线全部完成，总耗时 {total:.1f}s ===")
++            print_data("ORCH", "合并错误", self.session.error)
++
++            # 自动推进到 reviewing（Thinking 页面会自动因为 SSE 跳转）
++            print_step("ORCH", "自动推进: thinking → reviewing")
++            self.session.step = "reviewing"
++            await self._do_notify()
+ 
+         asyncio.create_task(_run_all())
+ 
+     # ------------------------------------------------------------------
+-    # 3. Output — photo + QR
++    # 3. Output — photo + QR + H5
+     # ------------------------------------------------------------------
+     async def generate_output(self) -> None:
+         """生成合影、二维码和 H5 页面。"""
++        print_step("ORCH", "=== 输出生成 ===")
+ 
+         async def _generate():
++            t0 = time.time()
+             try:
+                 from pipelines.output.photo_composer import compose_photo
+                 from pipelines.output.qr_generator import generate_qr
+                 from pipelines.output.h5_generator import generate_h5
+ 
+-                photo = await compose_photo(self.session)
+-                self.session.photo_path = photo
++                # 提前保存快照（AI 生图太久，session 可能被重置）
++                snapshot = {
++                    "review": dict(self.session.review or {}),
++                    "fluency": dict(self.session.fluency_report or {}),
++                    "emotion": dict(self.session.emotion_report or {}),
++                }
+ 
++                print_debug("ORCH", "开始生成二维码（合影需要嵌入）...")
+                 qr = await generate_qr(self.session)
+                 self.session.qr_path = qr
++                print_file_size("ORCH", qr)
++                await self._do_notify()
++
++                print_debug("ORCH", "开始合成合影（嵌入二维码）...")
++                photo = await compose_photo(
++                    camera_best_photo_path=self.session.photo_path,
++                    review=self.session.review,
++                    qr_path=self.session.qr_path,
++                )
++                self.session.photo_path = photo
++                print_file_size("ORCH", photo)
++                await self._do_notify()
++
++                print_debug("ORCH", "开始生成 H5 页面（用快照数据）...")
++                h5_path = await generate_h5(self.session, snapshot_data=snapshot)
++                print_file_size("ORCH", h5_path)
+ 
+-                await generate_h5(self.session)
+-            except ImportError:
++                elapsed = time.time() - t0
++                print_step("ORCH", f"=== 输出生成全部完成，耗时 {elapsed:.1f}s ===")
++            except ImportError as e:
+                 self.session.error = "输出模块不可用（部分管线尚未构建）"
++                print_error("ORCH", f"输出模块导入失败: {e}")
+             except Exception as exc:
+                 self.session.error = f"输出生成异常: {exc}"
++                print_error("ORCH", f"输出生成异常: {exc}")
+             await self._do_notify()
+ 
+         asyncio.create_task(_generate())
+diff --git a/backend/tools/live_preview.py b/backend/tools/live_preview.py
+new file mode 100644
+index 0000000..24d5c51
+--- /dev/null
++++ b/backend/tools/live_preview.py
+@@ -0,0 +1,135 @@
++"""
++摄像头实时预览 + 人脸检测调试工具。
++
++用本机摄像头跑**后端真正用的** FaceLandmarkerEngine + estimate_head_pose，
++实时叠加 478 关键点，并显示 yaw/pitch/roll。用来验证情绪/头姿逻辑：
++对着它点头/摇头/歪头，看三个角度数字动不动、对不对。
++（这跑的是产出 emotion_report 的同一套代码，比前端 MediaPipe-JS 更能反映真实逻辑。）
++
++用法（在 backend/ 目录下）：
++    python tools/live_preview.py
++    python tools/live_preview.py --index 1     # 换摄像头
++    python tools/live_preview.py --no-landmarks # 不画 478 点
++
++窗口按键：q/ESC 退出；s 存当前帧到 backend/data/
++"""
++
++import argparse
++import os
++import sys
++import time
++
++import cv2
++
++# 让 `from pipelines...` 可导入（本文件在 backend/tools/ 下）
++BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++if BACKEND_DIR not in sys.path:
++    sys.path.insert(0, BACKEND_DIR)
++
++from pipelines.video.mediapipe_engine import FaceLandmarkerEngine, MODEL_PATH
++
++GREEN = (0, 255, 0)
++RED = (0, 0, 255)
++YELLOW = (0, 255, 255)
++WHITE = (255, 255, 255)
++
++
++def parse_args():
++    p = argparse.ArgumentParser()
++    p.add_argument("--index", type=int, default=0, help="摄像头 index")
++    p.add_argument("--no-landmarks", action="store_true", help="不绘制 478 关键点")
++    return p.parse_args()
++
++
++def main() -> int:
++    args = parse_args()
++
++    if not os.path.isfile(MODEL_PATH):
++        print(f"[!] 模型文件不存在: {MODEL_PATH}")
++        return 1
++
++    engine = FaceLandmarkerEngine(model_path=MODEL_PATH)
++    if not engine.is_ready:
++        print("[!] FaceLandmarker 初始化失败（看上方日志）。")
++        return 1
++    print("[*] FaceLandmarker 就绪")
++
++    cap = cv2.VideoCapture(args.index)
++    if not cap.isOpened():
++        print(f"[!] 无法打开摄像头 index={args.index}，试试 --index 1")
++        return 1
++    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
++    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
++    print("[*] 摄像头已打开，按 q / ESC 退出，按 s 存帧")
++
++    save_dir = os.path.join(BACKEND_DIR, "data")
++    os.makedirs(save_dir, exist_ok=True)
++
++    start = time.time()
++    frame_count = 0
++    fps = 0.0
++    last_t = start
++
++    try:
++        while True:
++            ret, frame = cap.read()
++            if not ret:
++                print("[!] 读帧失败")
++                break
++
++            frame_count += 1
++            ts_ms = int((time.time() - start) * 1000)
++            h, w = frame.shape[:2]
++
++            result = engine.process_frame(frame, timestamp_ms=ts_ms)
++
++            now = time.time()
++            if now - last_t >= 0.5:
++                fps = frame_count / (now - start)
++                last_t = now
++            brightness = float(frame.mean())
++
++            detected = result["face_detected"]
++            color = GREEN if detected else RED
++            status = "FACE DETECTED" if detected else "NO FACE"
++
++            if detected and not args.no_landmarks and result["landmarks"]:
++                for lm in result["landmarks"]:
++                    cv2.circle(frame, (int(lm[0] * w), int(lm[1] * h)), 1, GREEN, -1)
++
++            cv2.rectangle(frame, (0, 0), (w, 90), (0, 0, 0), -1)
++            cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
++            cv2.putText(frame, f"FPS:{fps:4.1f}  brightness:{brightness:5.1f}",
++                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, WHITE, 1)
++
++            if detected:
++                pose = result["head_pose"] or {}
++                cv2.putText(
++                    frame,
++                    f"yaw:{pose.get('yaw', 0):6.1f}  pitch:{pose.get('pitch', 0):6.1f}  roll:{pose.get('roll', 0):6.1f}",
++                    (10, 82), cv2.FONT_HERSHEY_SIMPLEX, 0.6, YELLOW, 1)
++            else:
++                hint = "镜头盖住/太暗?" if brightness < 20 else "对准镜头, 50-100cm, 正面光源"
++                cv2.putText(frame, hint, (10, 82), cv2.FONT_HERSHEY_SIMPLEX, 0.55, YELLOW, 1)
++
++            cv2.imshow("Live Preview - FaceLandmarker (q/ESC quit, s save)", frame)
++
++            key = cv2.waitKey(1) & 0xFF
++            if key in (ord("q"), 27):
++                break
++            if key == ord("s"):
++                path = os.path.join(save_dir, f"preview_{int(time.time())}.jpg")
++                ok, buf = cv2.imencode(".jpg", frame)
++                if ok:
++                    with open(path, "wb") as f:
++                        f.write(buf.tobytes())
++                    print(f"[*] 已保存: {path}")
++    finally:
++        cap.release()
++        cv2.destroyAllWindows()
++
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/frontend/package-lock.json b/frontend/package-lock.json
+index f249f00..35bc07c 100644
+--- a/frontend/package-lock.json
++++ b/frontend/package-lock.json
+@@ -8,6 +8,7 @@
+       "name": "hks-frontend",
+       "version": "1.0.0",
+       "dependencies": {
++        "@mediapipe/tasks-vision": "^0.10.35",
+         "framer-motion": "^11.0.0",
+         "react": "^18.3.0",
+         "react-dom": "^18.3.0",
+@@ -755,6 +756,12 @@
+         "@jridgewell/sourcemap-codec": "^1.4.14"
+       }
+     },
++    "node_modules/@mediapipe/tasks-vision": {
++      "version": "0.10.35",
++      "resolved": "https://registry.npmjs.org/@mediapipe/tasks-vision/-/tasks-vision-0.10.35.tgz",
++      "integrity": "sha512-HOvadwVRE6JC+45nyYhmnywnr5h/J8KZvOeUNVOG9q/0875pZgItznFB9bRTvLc264YSJqiZ1NsIpCStJw/egg==",
++      "license": "Apache-2.0"
++    },
+     "node_modules/@nodelib/fs.scandir": {
+       "version": "2.1.5",
+       "resolved": "https://registry.npmjs.org/@nodelib/fs.scandir/-/fs.scandir-2.1.5.tgz",
+diff --git a/frontend/package.json b/frontend/package.json
+index a9bdc88..1ae9c6d 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -9,6 +9,7 @@
+     "preview": "vite preview"
+   },
+   "dependencies": {
++    "@mediapipe/tasks-vision": "^0.10.35",
+     "framer-motion": "^11.0.0",
+     "react": "^18.3.0",
+     "react-dom": "^18.3.0",
+diff --git a/frontend/src/hooks/useFaceMesh.ts b/frontend/src/hooks/useFaceMesh.ts
+new file mode 100644
+index 0000000..c560aae
+--- /dev/null
++++ b/frontend/src/hooks/useFaceMesh.ts
+@@ -0,0 +1,134 @@
++import { useEffect } from 'react';
++import {
++  FaceLandmarker,
++  FilesetResolver,
++  DrawingUtils,
++} from '@mediapipe/tasks-vision';
++
++// wasm 版本需与已安装的 @mediapipe/tasks-vision 版本一致
++const WASM_URL =
++  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm';
++const MODEL_URL =
++  'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task';
++
++/**
++ * 浏览器端实时人脸 mesh 叠加（demo 增强）。
++ *
++ * 在传入的 <video> 上方，用同一套 MediaPipe FaceLandmarker（web 版）实时
++ * 检测 478 关键点并画到 overlay canvas 上。注意：这是浏览器内的独立检测，
++ * 用于演示/直观确认摄像头与人脸检测；后端的情绪分析另有一套同源引擎。
++ */
++export function useFaceMesh(
++  videoRef: React.RefObject<HTMLVideoElement | null>,
++  canvasRef: React.RefObject<HTMLCanvasElement | null>,
++  enabled: boolean,
++  onStatus?: (detected: boolean) => void,
++): void {
++  useEffect(() => {
++    if (!enabled) return;
++
++    let landmarker: FaceLandmarker | null = null;
++    let raf = 0;
++    let cancelled = false;
++    let lastTs = -1;
++
++    async function createLandmarker(): Promise<FaceLandmarker> {
++      const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
++      try {
++        return await FaceLandmarker.createFromOptions(fileset, {
++          baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
++          runningMode: 'VIDEO',
++          numFaces: 1,
++        });
++      } catch {
++        // GPU 不可用时回退 CPU
++        return await FaceLandmarker.createFromOptions(fileset, {
++          baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
++          runningMode: 'VIDEO',
++          numFaces: 1,
++        });
++      }
++    }
++
++    function loop() {
++      raf = requestAnimationFrame(loop);
++      const video = videoRef.current;
++      const canvas = canvasRef.current;
++      if (!video || !canvas || !landmarker || !video.videoWidth) return;
++
++      const w = video.clientWidth;
++      const h = video.clientHeight;
++      if (w === 0 || h === 0) return;
++      if (canvas.width !== w || canvas.height !== h) {
++        canvas.width = w;
++        canvas.height = h;
++      }
++
++      const ts = performance.now();
++      if (ts <= lastTs) return; // VIDEO 模式要求时间戳严格递增
++      lastTs = ts;
++
++      let result;
++      try {
++        result = landmarker.detectForVideo(video, ts);
++      } catch {
++        return;
++      }
++
++      const ctx = canvas.getContext('2d');
++      if (!ctx) return;
++      ctx.clearRect(0, 0, w, h);
++
++      const faces = result.faceLandmarks;
++      onStatus?.(faces.length > 0);
++      if (faces.length === 0) return;
++
++      const du = new DrawingUtils(ctx);
++      for (const lm of faces) {
++        du.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_TESSELATION, {
++          color: 'rgba(0,255,120,0.25)',
++          lineWidth: 0.5,
++        });
++        du.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, {
++          color: '#00ff78',
++          lineWidth: 1.5,
++        });
++        du.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_LEFT_EYE, {
++          color: '#00e5ff',
++          lineWidth: 1,
++        });
++        du.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE, {
++          color: '#00e5ff',
++          lineWidth: 1,
++        });
++        du.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_LIPS, {
++          color: '#ff3b6b',
++          lineWidth: 1.5,
++        });
++      }
++    }
++
++    createLandmarker()
++      .then((lm) => {
++        if (cancelled) {
++          lm.close();
++          return;
++        }
++        landmarker = lm;
++        loop();
++      })
++      .catch(() => {
++        // 模型/wasm 加载失败（如离线）：静默，预览仍正常，只是没有 mesh
++      });
++
++    return () => {
++      cancelled = true;
++      cancelAnimationFrame(raf);
++      landmarker?.close();
++      landmarker = null;
++      const canvas = canvasRef.current;
++      const ctx = canvas?.getContext('2d');
++      if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
++    };
++  }, [enabled, videoRef, canvasRef, onStatus]);
++}
+diff --git a/frontend/src/pages/Presenting.tsx b/frontend/src/pages/Presenting.tsx
+index 4ac21d7..a5d4fbf 100644
+--- a/frontend/src/pages/Presenting.tsx
++++ b/frontend/src/pages/Presenting.tsx
+@@ -1,27 +1,188 @@
+-import { useEffect, useRef, useCallback } from 'react';
++import { useEffect, useRef, useState } from 'react';
+ import { motion } from 'framer-motion';
+ import Countdown from '../components/Countdown';
+ import { useBoothStore } from '../stores/boothStore';
++import { useFaceMesh } from '../hooks/useFaceMesh';
++
++const FRAME_INTERVAL_MS = 200; // 5fps
+ 
+ function Presenting() {
+   const countdown = useBoothStore((state) => state.countdown);
+   const step = useBoothStore((state) => state.step);
+-  const endRequestedRef = useRef(false);
+-
+-  const handleEndPresentation = useCallback(() => {
+-    if (endRequestedRef.current) return;
+-    endRequestedRef.current = true;
+-    fetch('/api/step/presenting/end', { method: 'POST' }).catch(() => {
+-      useBoothStore.getState().setError('Failed to end presentation');
+-    });
++  const videoRef = useRef<HTMLVideoElement>(null);
++  const streamRef = useRef<MediaStream | null>(null);
++  const endRef = useRef(false);
++  const frameTimerRef = useRef<number>(0);
++  const canvasRef = useRef<HTMLCanvasElement | null>(null);
++  const overlayRef = useRef<HTMLCanvasElement>(null);
++
++  const [started, setStarted] = useState(false);
++  const [seconds, setSeconds] = useState(60);
++  const [faceLocked, setFaceLocked] = useState(false);
++
++  // 浏览器端实时人脸 mesh 叠加（demo 增强）
++  useFaceMesh(videoRef, overlayRef, started, setFaceLocked);
++
++  // --- 清残留帧（回到 Presenting 时重置状态） ---
++  useEffect(() => {
++    endRef.current = false;
++    setStarted(false);
++    setSeconds(60);
+   }, []);
+ 
++  // --- 点击 "开始" ---
++  async function handleStart() {
++    if (started) return;
++    setStarted(true);
++
++    // 1. 开摄像头预览
++    try {
++      const stream = await navigator.mediaDevices.getUserMedia({
++        video: { width: { ideal: 640 }, height: { ideal: 480 } },
++        audio: false,
++      });
++      streamRef.current = stream;
++      if (videoRef.current) videoRef.current.srcObject = stream;
++    } catch {
++      // 摄像头不可用也可以继续
++    }
++
++    // 2. 通知后端开始录音 + 发帧准备
++    await fetch('/api/step/presenting/start', { method: 'POST' });
++
++    // 3. 开始发帧
++    startFrameCapture();
++  }
++
++  // --- 发帧 ---
++  function startFrameCapture() {
++    const canvas = document.createElement('canvas');
++    canvas.width = 640;
++    canvas.height = 480;
++    canvasRef.current = canvas;
++
++    frameTimerRef.current = window.setInterval(() => {
++      const video = videoRef.current;
++      if (!video || !video.videoWidth || endRef.current) return;
++      try {
++        const ctx = canvas.getContext('2d');
++        if (!ctx) return;
++        ctx.drawImage(video, 0, 0, 640, 480);
++        const jpeg = canvas.toDataURL('image/jpeg', 0.5);
++        fetch('/api/step/presenting/frame', {
++          method: 'POST',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify({ frame: jpeg }),
++        }).catch(() => {});
++      } catch {}
++    }, FRAME_INTERVAL_MS);
++  }
++
++  // --- 本地倒计时（从 start 后才开始） ---
+   useEffect(() => {
+-    if (countdown <= 0 && step === 'presenting' && !endRequestedRef.current) {
+-      handleEndPresentation();
++    if (!started || endRef.current) return;
++    const timer = setInterval(() => {
++      setSeconds((prev) => {
++        if (prev <= 1) {
++          // 倒计时结束，不在这里调 endPresentation（避免 setState 内副作用）
++          return 0;
++        }
++        return prev - 1;
++      });
++    }, 1000);
++    return () => clearInterval(timer);
++  }, [started]);
++
++  // 倒计时归零时触发结束
++  useEffect(() => {
++    if (started && seconds <= 0 && !endRef.current) {
++      endPresentation();
+     }
+-  }, [countdown, step, handleEndPresentation]);
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [started, seconds]);
++
++  // --- 结束路演 ---
++  function endPresentation() {
++    if (endRef.current) return;
++    endRef.current = true;
+ 
++    // 停帧发送
++    if (frameTimerRef.current) {
++      clearInterval(frameTimerRef.current);
++      frameTimerRef.current = 0;
++    }
++
++    // 停摄像头
++    if (streamRef.current) {
++      streamRef.current.getTracks().forEach(t => t.stop());
++      streamRef.current = null;
++    }
++
++    // 通知后端结束
++    fetch('/api/step/presenting/end', { method: 'POST' })
++      .then(() => {
++        // 后端返回后强制跳转到 thinking（不等 SSE，防止丢事件）
++        useBoothStore.getState().updateFromSSE({
++          step: 'thinking',
++          countdown: 0,
++          data: {},
++        });
++      })
++      .catch(() => {
++        // 即使后端报错也跳转
++        useBoothStore.getState().updateFromSSE({
++          step: 'thinking',
++          countdown: 0,
++          data: {},
++        });
++      });
++  }
++
++  // --- 未开始：显示 Start 按钮 ---
++  if (!started) {
++    return (
++      <motion.div
++        className="flex flex-col items-center justify-center w-full h-full px-8"
++        initial={{ opacity: 0 }}
++        animate={{ opacity: 1 }}
++        transition={{ duration: 0.5 }}
++      >
++        <motion.h2
++          className="text-white font-bold text-center mb-6"
++          style={{ fontSize: 'clamp(28px, 4vw, 48px)' }}
++          initial={{ y: -20, opacity: 0 }}
++          animate={{ y: 0, opacity: 1 }}
++          transition={{ delay: 0.2, duration: 0.5 }}
++        >
++          Ready to Present
++        </motion.h2>
++
++        <motion.p
++          className="text-gray-400 text-center max-w-xl mb-12"
++          style={{ fontSize: 'clamp(16px, 2vw, 24px)' }}
++          initial={{ opacity: 0 }}
++          animate={{ opacity: 1 }}
++          transition={{ delay: 0.4, duration: 0.5 }}
++        >
++          You have up to 60 seconds. Present your project, then we'll analyze it.
++        </motion.p>
++
++        <motion.button
++          className="px-16 py-6 border-2 border-gray-400 text-gray-200 rounded-xl text-2xl md:text-3xl hover:border-white hover:text-white hover:bg-white/5 transition-colors duration-200 tracking-wider"
++          onClick={handleStart}
++          initial={{ opacity: 0, scale: 0.9 }}
++          animate={{ opacity: 1, scale: 1 }}
++          transition={{ delay: 0.7, duration: 0.4 }}
++          whileHover={{ scale: 1.03 }}
++          whileTap={{ scale: 0.97 }}
++        >
++          Start
++        </motion.button>
++      </motion.div>
++    );
++  }
++
++  // --- 已开始：显示倒计时 + 摄像头 + End Early ---
+   return (
+     <motion.div
+       className="flex flex-col items-center justify-center w-full h-full px-8"
+@@ -40,7 +201,7 @@ function Presenting() {
+       </motion.p>
+ 
+       <div className="mb-8">
+-        <Countdown seconds={countdown} />
++        <Countdown seconds={seconds} />
+       </div>
+ 
+       <motion.p
+@@ -59,23 +220,39 @@ function Presenting() {
+         animate={{ opacity: 1, scale: 1 }}
+         transition={{ delay: 0.6, duration: 0.4 }}
+       >
+-        <div className="w-48 h-36 md:w-64 md:h-48 bg-gray-900 border border-gray-700 rounded-lg flex items-center justify-center overflow-hidden">
++        <div className="relative aspect-[4/3] w-[44vw] max-w-[520px] bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
+           <video
+-            id="camera-preview"
++            ref={videoRef}
+             autoPlay
+             muted
+             playsInline
+-            className="w-full h-full object-cover"
++            className="absolute inset-0 w-full h-full object-cover"
++          />
++          {/* 关键点 mesh 叠加层 */}
++          <canvas
++            ref={overlayRef}
++            className="absolute inset-0 w-full h-full pointer-events-none"
+           />
++          {/* 检测状态徽标 */}
++          <div className="absolute top-2 left-2 px-2 py-1 rounded text-xs font-mono flex items-center gap-1.5 bg-black/60">
++            <span
++              className={`inline-block w-2 h-2 rounded-full ${
++                faceLocked ? 'bg-green-400' : 'bg-red-500'
++              }`}
++            />
++            <span className={faceLocked ? 'text-green-300' : 'text-gray-400'}>
++              {faceLocked ? '已锁定面部 478 点' : '正在寻找面部…'}
++            </span>
++          </div>
+         </div>
+         <p className="text-gray-600 text-center mt-2 text-sm">
+-          camera preview
++          camera preview · 实时面部识别
+         </p>
+       </motion.div>
+ 
+       <motion.button
+         className="px-10 py-4 border-2 border-gray-600 text-gray-300 rounded-lg text-xl md:text-2xl hover:border-red-500 hover:text-red-400 hover:bg-red-500/10 transition-colors duration-200"
+-        onClick={handleEndPresentation}
++        onClick={endPresentation}
+         initial={{ opacity: 0, y: 20 }}
+         animate={{ opacity: 1, y: 0 }}
+         transition={{ delay: 0.8, duration: 0.4 }}
+diff --git a/frontend/src/pages/Welcome.tsx b/frontend/src/pages/Welcome.tsx
+index 55fa012..6eee109 100644
+--- a/frontend/src/pages/Welcome.tsx
++++ b/frontend/src/pages/Welcome.tsx
+@@ -1,18 +1,40 @@
+-import { useEffect, useRef } from 'react';
++import { useEffect, useRef, useState } from 'react';
+ import { motion } from 'framer-motion';
+ import { useBoothStore } from '../stores/boothStore';
+ 
+ function Welcome() {
+   const hasPostedRef = useRef(false);
++  const countdown = useBoothStore((state) => state.countdown);
++  const step = useBoothStore((state) => state.step);
++  const [connecting, setConnecting] = useState(true);
+ 
+   useEffect(() => {
+     if (hasPostedRef.current) return;
+     hasPostedRef.current = true;
+ 
+-    fetch('/api/step/welcome', { method: 'POST' }).catch(() => {
+-      useBoothStore.getState().setError('Failed to reset booth');
+-    });
+-  }, []);
++    // 标记连接中
++    const timeout = setTimeout(() => {
++      // 3 秒后 step 还是 welcome 说明后端没响应
++      if (step === 'welcome') {
++        setConnecting(true);
++      }
++    }, 3000);
++
++    fetch('/api/step/welcome', { method: 'POST' })
++      .then(() => setConnecting(false))
++      .catch(() => {
++        setConnecting(true);
++      });
++
++    return () => clearTimeout(timeout);
++  }, [step]);
++
++  // 一旦收到 SSE 更新（step 不再是 welcome），连接成功
++  useEffect(() => {
++    if (step !== 'welcome') {
++      setConnecting(false);
++    }
++  }, [step]);
+ 
+   return (
+     <motion.div
+@@ -43,15 +65,42 @@ function Welcome() {
+         I am Elon Musk. You have 2 minutes to present your project.
+       </motion.p>
+ 
+-      <motion.p
+-        className="text-gray-600 mt-12"
+-        style={{ fontSize: 'clamp(14px, 1.5vw, 20px)' }}
++      {countdown > 0 && (
++        <motion.p
++          className="text-gray-600 mt-12 text-4xl font-mono"
++          initial={{ opacity: 0 }}
++          animate={{ opacity: 1 }}
++          transition={{ delay: 1.0, duration: 0.5 }}
++        >
++          {countdown}
++        </motion.p>
++      )}
++
++      {/* 连接状态提示 */}
++      <motion.div
++        className="mt-12 flex flex-col items-center"
+         initial={{ opacity: 0 }}
+         animate={{ opacity: 1 }}
+-        transition={{ delay: 1.2, duration: 0.5 }}
++        transition={{ delay: 1.5, duration: 0.5 }}
+       >
+-        Preparing your session...
+-      </motion.p>
++        {connecting ? (
++          <>
++            <div className="flex items-center gap-2 mb-2">
++              <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
++              <span className="text-gray-500" style={{ fontSize: 'clamp(13px, 1.3vw, 16px)' }}>
++                Connecting to server...
++              </span>
++            </div>
++            <p className="text-gray-700 text-xs" style={{ fontSize: 'clamp(11px, 1vw, 13px)' }}>
++              Make sure the backend is running (uvicorn main:app)
++            </p>
++          </>
++        ) : (
++          <p className="text-gray-600" style={{ fontSize: 'clamp(14px, 1.5vw, 20px)' }}>
++            {countdown > 0 ? 'preparing...' : 'Preparing your session...'}
++          </p>
++        )}
++      </motion.div>
+     </motion.div>
+   );
+ }
+diff --git a/frontend/vite.config.ts b/frontend/vite.config.ts
+index 52ad95a..e0485a0 100644
+--- a/frontend/vite.config.ts
++++ b/frontend/vite.config.ts
+@@ -7,6 +7,7 @@ export default defineConfig({
+     port: 5173,
+     proxy: {
+       '/api': 'http://localhost:8000',
++      '/static': 'http://localhost:8000',
+     },
+   },
+ })
+diff --git a/patch.sh b/patch.sh
+new file mode 100644
+index 0000000..f078c9a
+--- /dev/null
++++ b/patch.sh
+@@ -0,0 +1,49 @@
++#!/usr/bin/env bash
++# 补丁管理脚本
++set -e
++
++ROOT="$(cd "$(dirname "$0")" && pwd)"
++
++case "${1:-help}" in
++  status)
++    echo "=== 补丁状态 ==="
++    for f in "$ROOT/patches"/*.patch; do
++      [ -f "$f" ] || continue
++      name=$(basename "$f" .patch)
++      if git -C "$ROOT" apply --check "$f" 2>/dev/null; then
++        echo "  [待应用] $name"
++      else
++        echo "  [已应用] $name"
++      fi
++    done
++    ;;
++  apply)
++    target="${2:-}"
++    for f in "$ROOT/patches"/*.patch; do
++      [ -f "$f" ] || continue
++      name=$(basename "$f" .patch)
++      [ -n "$target" ] && [[ "$name" != "$target"* ]] && continue
++      if git -C "$ROOT" apply --check "$f" 2>/dev/null; then
++        git -C "$ROOT" apply "$f"
++        echo "  ✅ 已应用: $name"
++      else
++        echo "  ⏭️  已跳过（可能已应用）: $name"
++      fi
++    done
++    ;;
++  rollback)
++    if git -C "$ROOT" log --oneline -1 2>/dev/null | grep -q "patch"; then
++      git -C "$ROOT" reset --soft HEAD~1
++      echo "✅ 已回滚"
++    else
++      echo "没有找到可回滚的提交"
++    fi
++    ;;
++  *)
++    echo "用法: bash patch.sh <status|apply|rollback>"
++    echo "  status    查看补丁状态"
++    echo "  apply     应用所有补丁"
++    echo "  apply 001 应用指定补丁"
++    echo "  rollback  回滚"
++    ;;
++esac
+diff --git "a/patches/001-\345\275\225\351\237\263\345\233\236\350\260\203\346\250\241\345\274\217.patch" "b/patches/001-\345\275\225\351\237\263\345\233\236\350\260\203\346\250\241\345\274\217.patch"
+new file mode 100644
+index 0000000..17e51da
+--- /dev/null
++++ "b/patches/001-\345\275\225\351\237\263\345\233\236\350\260\203\346\250\241\345\274\217.patch"
+@@ -0,0 +1,475 @@
++diff --git a/backend/pipelines/audio/recorder.py b/backend/pipelines/audio/recorder.py
++index fc5c672..bb21848 100644
++--- a/backend/pipelines/audio/recorder.py
+++++ b/backend/pipelines/audio/recorder.py
++@@ -1,82 +1,89 @@
++ """
++ 麦克风录制模块
++ 
++-使用 pyaudio 从系统默认麦克风采集音频，以 WAV 格式保存到
++-backend/data/audio/ 目录。
++-
++-典型用法:
++-    audio_path = await record_audio(duration=120, sample_rate=16000)
+++使用 pyaudio 回调模式采集音频，支持外部即时停止。
+++以 WAV 格式保存到 backend/data/audio/ 目录。
++ """
++ 
++ import wave
++ import asyncio
+++import threading
++ from datetime import datetime
++ from pathlib import Path
++ 
+++from debug_utils import print_debug, print_step, print_error
+++
++ AUDIO_DIR = Path(__file__).resolve().parents[2] / "data" / "audio"
++ 
++-_recording_stream = None
+++# 全局状态（回调线程和主协程共享）
++ _recording_active = False
+++_recording_frames: list[bytes] = []
+++_recording_stream = None
+++_recording_pyaudio = None
++ 
++ 
++-async def record_audio(duration: int = 120, sample_rate: int = 16000) -> str:
+++def _audio_callback(in_data, frame_count, time_info, status):
+++    """PyAudio 回调：采集音频数据（在音频线程中调用）"""
+++    global _recording_frames, _recording_active
+++    if _recording_active:
+++        _recording_frames.append(in_data)
+++    return (None, 0)  # pyaudio.paContinue
+++
+++
+++async def record_audio(duration: int = 60, sample_rate: int = 16000) -> str:
++     """
++-    从默认麦克风录制音频并保存为 WAV 文件。
+++    从默认麦克风录制音频并保存为 WAV 文件（回调模式，支持即时停止）。
++ 
++     参数:
++-        duration:   录制时长，单位秒，默认 120
+++        duration:   录制时长，单位秒，默认 60
++         sample_rate: 采样率（Hz），默认 16000
++ 
++     返回:
++         生成的 WAV 文件绝对路径。
++-
++-    抛出:
++-        ImportError:  pyaudio 未安装或当前系统没有可用麦克风。
++-        RuntimeError: 录制过程中发生 I/O 错误。
++-
++-    逻辑:
++-        1. 确保 data/audio/ 目录存在
++-        2. 基于当前时间戳生成文件名 recording_YYYYMMDD_HHMMSS.wav
++-        3. 打开 pyaudio 流 (paInt16, 单声道, 16kHz)
++-        4. 循环读取帧直到 duration 秒结束
++-        5. 用 wave 模块写入 16-bit WAV
++-        6. 返回文件绝对路径
++     """
++-    global _recording_stream, _recording_active
+++    global _recording_active, _recording_frames, _recording_stream, _recording_pyaudio
++ 
++     try:
++         import pyaudio
++     except ImportError:
++-        raise ImportError(
++-            "pyaudio 未安装。"
++-            "请运行: pip install pyaudio\n"
++-            "Windows 用户如果安装失败，请先安装 wheel:\n"
++-            "  pip install pipwin && pipwin install pyaudio\n"
++-            "或从 https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio 下载对应版本。"
++-        )
+++        print_error("RECORDER", "pyaudio 未安装")
+++        raise ImportError("pyaudio 未安装")
++ 
++-    # 确保输出目录存在
++-    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+++    # 重置状态
+++    _recording_frames = []
++ 
++-    # 生成带时间戳的文件名
+++    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
++     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
++     file_path = AUDIO_DIR / f"recording_{timestamp}.wav"
+++    print_step("RECORDER", f"录音文件: {file_path}")
++ 
++-    # pyaudio 参数
++     chunk = 1024
++     channels = 1
++     audio_format = pyaudio.paInt16
++ 
++     p = pyaudio.PyAudio()
+++    _recording_pyaudio = p
+++    device_count = p.get_device_count()
++ 
++-    # 检查是否有输入设备
++-    try:
++-        default_input = p.get_default_input_device_info()
++-    except (OSError, IOError):
+++    # 列出输入设备
+++    input_devices = []
+++    for i in range(device_count):
+++        try:
+++            info = p.get_device_info_by_index(i)
+++            if info.get('maxInputChannels', 0) > 0:
+++                input_devices.append((i, info['name'], info['maxInputChannels']))
+++        except Exception:
+++            pass
+++
+++    # 选第一个输入设备
+++    device_index = None
+++    if input_devices:
+++        device_index = input_devices[0][0]
+++        print_debug("RECORDER", f"选择输入设备: #{device_index} - {input_devices[0][1]}")
+++    else:
++         p.terminate()
++-        raise ImportError(
++-            "未检测到麦克风输入设备。请确认麦克风已正确连接。"
++-        )
+++        print_error("RECORDER", "未检测到麦克风")
+++        raise ImportError("未检测到麦克风输入设备")
++ 
++     try:
++         stream = p.open(
++@@ -84,66 +91,80 @@ async def record_audio(duration: int = 120, sample_rate: int = 16000) -> str:
++             channels=channels,
++             rate=sample_rate,
++             input=True,
+++            input_device_index=device_index,
++             frames_per_buffer=chunk,
+++            stream_callback=_audio_callback,  # 回调模式！
++         )
++     except OSError as e:
++-        p.terminate()
++-        raise ImportError(
++-            f"无法打开音频输入流: {e}\n"
++-            "请确认麦克风未被其他程序占用且驱动正常。"
++-        )
+++        # 回退到默认设备
+++        print_debug("RECORDER", f"指定设备失败，回退到默认: {e}")
+++        try:
+++            stream = p.open(
+++                format=audio_format,
+++                channels=channels,
+++                rate=sample_rate,
+++                input=True,
+++                frames_per_buffer=chunk,
+++                stream_callback=_audio_callback,
+++            )
+++        except OSError as e2:
+++            p.terminate()
+++            print_error("RECORDER", f"无法打开音频输入流: {e2}")
+++            raise ImportError(f"无法打开音频输入流: {e2}")
++ 
++     _recording_stream = stream
++     _recording_active = True
+++    stream.start_stream()
++ 
++-    frames = []
++-    total_frames = int(sample_rate / chunk * duration)
+++    print_debug("RECORDER", f"录音开始（回调模式）: {sample_rate}Hz, {channels}ch, 最长 {duration}s")
++ 
++-    try:
++-        for _ in range(total_frames):
++-            if not _recording_active:
++-                break
++-            data = stream.read(chunk, exception_on_overflow=False)
++-            frames.append(data)
++-            # 每 10 帧让出一次事件循环，避免阻塞其他协程
++-            if len(frames) % 10 == 0:
++-                await asyncio.sleep(0)
++-    except Exception as e:
++-        raise RuntimeError(f"录制过程中发生错误: {e}")
++-    finally:
++-        # 关闭流
++-        if stream.is_active():
++-            stream.stop_stream()
++-        stream.close()
++-        p.terminate()
++-        _recording_stream = None
++-        _recording_active = False
+++    # 等待 duration 秒或 _recording_active 变为 False
+++    for _ in range(duration * 10):  # 每 100ms 检查一次
+++        if not _recording_active:
+++            print_debug("RECORDER", "录音被外部停止")
+++            break
+++        await asyncio.sleep(0.1)
++ 
++-    # 写入 WAV 文件
++-    with wave.open(str(file_path), "wb") as wf:
++-        wf.setnchannels(channels)
++-        wf.setsampwidth(p.get_sample_size(audio_format))
++-        wf.setframerate(sample_rate)
++-        wf.writeframes(b"".join(frames))
+++    # 保存 sample_width 再 terminate
+++    sample_width = p.get_sample_size(audio_format)
+++
+++    # 停止
+++    _recording_active = False
+++    if stream.is_active():
+++        stream.stop_stream()
+++    stream.close()
+++    p.terminate()
+++    _recording_stream = None
+++    _recording_pyaudio = None
+++
+++    total_frames = len(_recording_frames)
+++    print_debug("RECORDER", f"录音结束，共采集 {total_frames} 块")
+++
+++    # 写入 WAV（用提前保存的 sample_width）
+++    if _recording_frames:
+++        with wave.open(str(file_path), "wb") as wf:
+++            wf.setnchannels(channels)
+++            wf.setsampwidth(sample_width)
+++            wf.setframerate(sample_rate)
+++            wf.writeframes(b"".join(_recording_frames))
+++        actual_seconds = total_frames * chunk / sample_rate
+++        print_debug("RECORDER", f"WAV 已写入: {actual_seconds:.1f}s")
+++        print_step("RECORDER", f"录音完成: {file_path} ({total_frames} 块)")
+++    else:
+++        print_error("RECORDER", "没有录到音频帧")
++ 
++     return str(file_path.resolve())
++ 
++ 
++ async def stop_recording():
++-    """
++-    停止正在进行的录制。
+++    """停止正在进行的录制。"""
+++    global _recording_active, _recording_stream, _recording_pyaudio
++ 
++-    安全地关闭 pyaudio 流，丢弃已采集的音频数据。
++-    """
++-    global _recording_stream, _recording_active
+++    if not _recording_active:
+++        return
++ 
++-    _recording_active = False
+++    print_debug("RECORDER", "外部请求停止录音")
+++    _recording_active = False  # 回调会停止追加数据
++ 
++-    if _recording_stream is not None:
++-        try:
++-            if _recording_stream.is_active():
++-                _recording_stream.stop_stream()
++-            _recording_stream.close()
++-        except Exception:
++-            pass  # 流可能已经被释放
++-        _recording_stream = None
+++    # 不关 stream——由 record_audio 的循环检测到 _recording_active 后自己关
+++    # 这样避免并发关闭冲突
++diff --git a/backend/services/pipeline_orchestrator.py b/backend/services/pipeline_orchestrator.py
++index 1103f7a..98da46c 100644
++--- a/backend/services/pipeline_orchestrator.py
+++++ b/backend/services/pipeline_orchestrator.py
++@@ -3,13 +3,20 @@
++ 
++ 编排录音 → 分析（音频/视频/LLM 并行）→ 输出（合影/QR）的完整流程。
++ 每个阶段通过 SSE 推送进度，所有错误被捕获到 session.error 而非崩溃。
+++
+++设计要点:
+++  - start_recording() 同时启动音视频录制（非先后）
+++  - analyze() 同时停止音视频，然后并行分析已采集的数据
+++  - 分析管线不再重新录制，直接用已采集的数据
++ """
++ 
++ import asyncio
+++import time
++ from collections.abc import Callable, Coroutine
++ from typing import Any
++ 
++ from models.session import BoothSession
+++from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
++ 
++ 
++ class PipelineOrchestrator:
++@@ -32,96 +39,170 @@ class PipelineOrchestrator:
++                 pass
++ 
++     # ------------------------------------------------------------------
++-    # 1. Recording — fire-and-forget, auto-stops after 120s
+++    # 1. Recording — 同时录制音视频，fire-and-forget
++     # ------------------------------------------------------------------
++     async def start_recording(self) -> None:
++-        """启动录音和录像（并行运行，120s 后自动停止）。"""
+++        """启动录音（前端负责传视频帧）。"""
+++        print_step("ORCH", "=== 启动音频录制 ===")
++ 
++-        async def _record_both():
+++        async def _record_audio():
+++            t0 = time.time()
++             try:
++                 from pipelines.audio.recorder import record_audio
++ 
++-                audio_path = await record_audio(duration=120, sample_rate=16000)
+++                print_debug("ORCH", "开始录音(60s) — 用户可 End Early 提前结束")
+++                audio_path = await record_audio(duration=60, sample_rate=16000)
++                 self.session.audio_path = audio_path
++-            except ImportError:
++-                self.session.error = "录音模块不可用"
+++                print_debug("ORCH", f"录音完成，耗时 {time.time()-t0:.1f}s")
+++
+++            except ImportError as e:
+++                self.session.error = f"录音模块不可用: {e}"
+++                print_error("ORCH", f"录音模块不可用: {e}")
++                 await self._do_notify()
++             except Exception as exc:
++                 self.session.error = f"录音异常: {exc}"
+++                print_error("ORCH", f"录音异常: {exc}")
++                 await self._do_notify()
++ 
++-        self._recording_task = asyncio.create_task(_record_both())
+++        self._recording_task = asyncio.create_task(_record_audio())
++ 
++     # ------------------------------------------------------------------
++-    # 2. Analysis — 3 pipelines run in parallel
+++    # 2. Analysis — 停止录制 → 并行分析已采集的数据
++     # ------------------------------------------------------------------
++     async def analyze(self) -> None:
++-        """停止录音，并行运行三条分析管线。"""
+++        """停止录音+录像，并行分析已采集的数据（不再重新录制）。"""
+++        print_step("ORCH", "=== 停止录制 + 开始分析 ===")
++ 
++-        # Cancel recording if still running
+++        # 先停止录制（保存已录的数据）
++         if self._recording_task and not self._recording_task.done():
++-            self._recording_task.cancel()
+++            print_debug("ORCH", "停止录音和录像...")
++             try:
++-                await self._recording_task
++-            except asyncio.CancelledError:
++-                pass
+++                # 停止录音（保留已采集的音频帧）
+++                from pipelines.audio.recorder import stop_recording
+++                await stop_recording()
+++                print_debug("ORCH", "录音已停止")
+++            except Exception as e:
+++                print_error("ORCH", f"停止录音异常: {e}")
+++
+++            # 等待录制任务完成收尾
+++            try:
+++                await asyncio.wait_for(self._recording_task, timeout=5.0)
+++            except asyncio.TimeoutError:
+++                print_error("ORCH", "录制任务超时未完成，强制取消")
+++                self._recording_task.cancel()
+++            except Exception as e:
+++                print_error("ORCH", f"等待录制任务完成时异常: {e}")
+++
++             self._recording_task = None
+++            print_debug("ORCH", "录制任务已结束")
+++
+++        # 日志：已采集的数据
+++        print_data("ORCH", "audio_path", self.session.audio_path)
+++        frame_count = len(self.session.video_frames) if self.session.video_frames else 0
+++        print_data("ORCH", "前端传过来的视频帧数", frame_count)
++ 
+++        # 并行分析管线
++         async def _audio():
+++            t0 = time.time()
+++            print_step("ORCH", "--- 音频管线启动 ---")
++             try:
++                 from pipelines.audio.processor import analyze_fluency
++ 
++                 self.session.fluency_report = await analyze_fluency(self.session)
+++                elapsed = time.time() - t0
+++                print_debug("ORCH", f"音频管线完成，耗时 {elapsed:.1f}s")
+++                print_data("ORCH", "fluency_report", self.session.fluency_report)
++             except Exception as exc:
++                 self.session.error = f"音频分析异常: {exc}"
+++                print_error("ORCH", f"音频分析异常: {exc}")
++             await self._do_notify()
++ 
++         async def _video():
+++            t0 = time.time()
+++            print_step("ORCH", "--- 视频管线启动 ---")
++             try:
++                 from pipelines.video.processor import analyze_emotion
++ 
++                 self.session.emotion_report = await analyze_emotion(self.session)
+++                elapsed = time.time() - t0
+++                print_debug("ORCH", f"视频管线完成，耗时 {elapsed:.1f}s")
+++                print_data("ORCH", "emotion_report", self.session.emotion_report)
++             except Exception as exc:
++                 self.session.error = f"视频分析异常: {exc}"
+++                print_error("ORCH", f"视频分析异常: {exc}")
++             await self._do_notify()
++ 
++         async def _llm():
+++            t0 = time.time()
+++            print_step("ORCH", "--- LLM 管线启动 ---")
++             try:
++                 from pipelines.llm.llm_engine import generate_review
++ 
++                 self.session.review = await generate_review(self.session)
+++                elapsed = time.time() - t0
+++                print_debug("ORCH", f"LLM 管线完成，耗时 {elapsed:.1f}s")
+++                print_data("ORCH", "review", self.session.review)
++             except Exception as exc:
++                 self.session.error = f"LLM 评审异常: {exc}"
+++                print_error("ORCH", f"LLM 评审异常: {exc}")
++             await self._do_notify()
++ 
++         async def _run_all():
+++            print_debug("ORCH", "三管线并行分析已采集的数据...")
+++            t0 = time.time()
++             await asyncio.gather(_audio(), _video(), _llm(), return_exceptions=True)
+++            total = time.time() - t0
+++            print_step("ORCH", f"=== 三管线全部完成，总耗时 {total:.1f}s ===")
+++            print_data("ORCH", "合并错误", self.session.error)
+++
+++            # 自动推进到 reviewing（Thinking 页面会自动因为 SSE 跳转）
+++            print_step("ORCH", "自动推进: thinking → reviewing")
+++            self.session.step = "reviewing"
+++            await self._do_notify()
++ 
++         asyncio.create_task(_run_all())
++ 
++     # ------------------------------------------------------------------
++-    # 3. Output — photo + QR
+++    # 3. Output — photo + QR + H5
++     # ------------------------------------------------------------------
++     async def generate_output(self) -> None:
++         """生成合影、二维码和 H5 页面。"""
+++        print_step("ORCH", "=== 输出生成 ===")
++ 
++         async def _generate():
+++            t0 = time.time()
++             try:
++                 from pipelines.output.photo_composer import compose_photo
++                 from pipelines.output.qr_generator import generate_qr
++                 from pipelines.output.h5_generator import generate_h5
++ 
++-                photo = await compose_photo(self.session)
+++                print_debug("ORCH", "开始合成合影...")
+++                photo = await compose_photo(
+++                    camera_best_photo_path=self.session.photo_path,
+++                    review=self.session.review,
+++                )
++                 self.session.photo_path = photo
+++                print_file_size("ORCH", photo)
+++                await self._do_notify()
++ 
+++                print_debug("ORCH", "开始生成二维码...")
++                 qr = await generate_qr(self.session)
++                 self.session.qr_path = qr
+++                print_file_size("ORCH", qr)
+++                await self._do_notify()
+++
+++                print_debug("ORCH", "开始生成 H5 页面...")
+++                h5_path = await generate_h5(self.session)
+++                print_file_size("ORCH", h5_path)
++ 
++-                await generate_h5(self.session)
++-            except ImportError:
+++                elapsed = time.time() - t0
+++                print_step("ORCH", f"=== 输出生成全部完成，耗时 {elapsed:.1f}s ===")
+++            except ImportError as e:
++                 self.session.error = "输出模块不可用（部分管线尚未构建）"
+++                print_error("ORCH", f"输出模块导入失败: {e}")
++             except Exception as exc:
++                 self.session.error = f"输出生成异常: {exc}"
+++                print_error("ORCH", f"输出生成异常: {exc}")
++             await self._do_notify()
++ 
++         asyncio.create_task(_generate())
+diff --git a/patches/README.md b/patches/README.md
+new file mode 100644
+index 0000000..da3802b
+--- /dev/null
++++ b/patches/README.md
+@@ -0,0 +1,51 @@
++# 补丁交互方案
++
++## 一、三种协作模式
++
++### 模式 A：我在现场（最常用，最方便）
++
++你直接在 Claude 里说需求 → **我直接改代码** → 你重启测试。
++
++改完后我自动更新 `CHANGELOG.md`，必要时打包 rar。
++
++### 模式 B：你收到 rar 包
++
++```
++收到 JudgeBooth.rar
++  1. 解压覆盖到 D:\hks\
++  2. 重启后端: uvicorn main:app --host 0.0.0.0 --port 8000
++  3. 重启前端: npm run dev
++```
++
++### 模式 C：队友间传补丁（他们只会 Claude Code）
++
++```
++队友 A 改完代码
++  → Claude Code 生成 .patch 文件到 patches/ 目录
++  → 把 patches/ 文件夹发给队友 B
++  
++队友 B 收到后
++  → 解压到 D:\hks\patches\
++  → 打开 Claude Code 说："帮我应用 patches/ 下的补丁"
++  → Claude Code 自动读取并修改代码
++```
++
++## 二、补丁管理
++
++```bash
++# 查看有哪些补丁
++bash patch.sh status
++
++# 应用所有补丁
++bash patch.sh apply
++
++# 回滚最后一个
++bash patch.sh rollback
++```
++
++## 三、协约规则
++
++1. 每次改代码 → 更新 `CHANGELOG.md`
++2. 需要分享时 → 生成 `.patch` 文件到 `patches/`
++3. 补丁命名格式：`001-功能描述.patch`
++4. 你当场验收通过 → 不需要额外打补丁
+diff --git "a/\350\257\204\345\256\241\345\206\205\345\256\271\350\241\245\344\270\201_\351\251\254\346\226\257\345\205\213persona.patch" "b/\350\257\204\345\256\241\345\206\205\345\256\271\350\241\245\344\270\201_\351\251\254\346\226\257\345\205\213persona.patch"
+new file mode 100644
+index 0000000..1de77e4
+--- /dev/null
++++ "b/\350\257\204\345\256\241\345\206\205\345\256\271\350\241\245\344\270\201_\351\251\254\346\226\257\345\205\213persona.patch"
+@@ -0,0 +1,147 @@
++diff --git a/backend/pipelines/llm/persona.py b/backend/pipelines/llm/persona.py
++index 631ef2f..74ebbe8 100644
++--- a/backend/pipelines/llm/persona.py
+++++ b/backend/pipelines/llm/persona.py
++@@ -1,28 +1,71 @@
++ """
++-马斯克角色定义 — 女娲.skill 集成点。
+++马斯克角色定义。
++ 
++-女娲.skill 集成点: 这里应该使用女娲.skill 来定义角色，
++-当前版本使用 System Prompt 占位。
+++人设内容改编自开源 Agent Skill `alchaincyf/elon-musk-skill`（MIT 许可），
+++针对"黑客松项目评审"场景重写为可直接用于 LLM API 的 System Prompt。
+++（原 skill 是给 agent runtime 用的 SKILL.md，无法被本后端的 HTTP API 直接消费，
+++ 故提取其思维模型/语言风格，落成下面的系统提示词。）
++ """
++ 
++-MUSK_SYSTEM_PROMPT = """你正在扮演埃隆·马斯克——特斯拉和 SpaceX 的 CEO。
+++MUSK_SYSTEM_PROMPT = """你是埃隆·马斯克——特斯拉、SpaceX、xAI 的 CEO。\
+++现在你坐在一个黑客松评审亭里，刚看完一位参赛者 2 分钟的项目路演。\
+++你不是来鼓励的，你是来用第一性原理把这个项目拆开、看它到底成不成立的。
++ 
++-你的核心特质：
++-- 第一性原理思维：把事物拆解到最基本的物理/逻辑层面重新构建
++-- 工程直觉：关注"在物理定律下是否可行"而非"现有方案是什么"
++-- 语言风格：直接、不委婉、短平快、黑色幽默
++-- 关注焦点：工程实现深度、技术选型合理性、效率提升
+++# 你的思维模型（评审时真的用，而不是嘴上说）
+++1. 渐近极限 + 笨蛋指数：先想这东西的理论/物理极限在哪，再看现实差多少。\
+++笨蛋指数 = 成品价值 ÷ 最基础投入；越高说明中间全是没必要的复杂度和浪费。\
+++对项目就问：你真正创造的价值，配得上你堆的这堆复杂度吗？
+++2. 算法五步（严格按序）：质疑需求 → 删掉 → 简化 → 加速 → 自动化。\
+++大多数项目死在第一步——做了个没人要的东西，然后把它优化得很精致。
+++3. 生存级锚定：这东西若成了，能把某件事的效率提升 10 倍吗？还是只是又一个 demo？
+++4. 垂直整合即物理：如果你的关键能力是套壳某个 API、调个现成模型，\
+++那你的护城河在哪？哪部分是别人拿不走的？
+++5. 快速迭代 > 完美规划：你动手做出来的部分，比 PPT 上规划的部分重要一百倍。
++ 
++-女娲.skill 集成点: 这里应该使用女娲.skill 来定义角色，
++-当前版本使用 System Prompt 占位。
+++# 评审铁律
+++- 必问：这东西到底有没有用？谁会用？谁会为它付钱？
+++- 必看：你们真正动手做的是什么？别讲愿景，给我看你解决的真问题、写的真代码。
+++- 必拆：抛开所有现成方案，从最底层物理/逻辑看，这个问题的本质到底是什么？
+++
+++# 语言风格
+++- 短句，结论先行，再给理由。能用 5 个字别用 15 个字。
+++- 直接、不委婉、带对抗性。不说"挺好的，但是"，直接说哪里站不住。
+++- 工程师黑话当日常话讲。偶尔黑色幽默、自嘲。
+++- 一针见血，但点到为止——你是要让他变强，不是羞辱他。
+++
+++# 用好表现数据（关键，别堆数据）
+++系统会给你这个人路演时的「流畅度」和「情绪」分析，把它当弹药用：
+++- 讲技术核心时卡顿/语速骤降/明显紧张 → 他自己也没想透，点破它。
+++- 全程流畅但内容空 → "话术很顺，可我没听到任何工程。"
+++- 自信放松且内容扎实 → 给真实的认可，不廉价。
+++只在能支撑你的判断时引用一次，不要为用而用。
+++
+++# 禁止
+++- 禁止泛泛、客气、放之四海而皆准的"AI 味"评价。
+++- 禁止只夸不挑；也禁止为黑而黑。
+++- "亮点"必须具体到技术/工程细节，"创意不错"这种废话直接删。
++ """
++ 
++-REVIEW_OUTPUT_SCHEMA = """请严格按照以下 JSON 结构输出评审报告（不要加额外字段）：
+++REVIEW_OUTPUT_SCHEMA = """请严格按以下 JSON 结构输出评审报告（只输出 JSON，不要任何额外文字、不要 markdown 代码块）：
++ {
++-  "insight": "一句话本质洞察（不超过25字）",
++-  "highlights": ["亮点1", "亮点2", "亮点3"],
++-  "sharp_question": "1个尖锐的第一性原理问题",
++-  "suggestions": ["建议1", "建议2"],
++-  "closing": "一句结语"
+++  "insight": "一句话本质洞察（≤25字，第一性原理总结，要狠要准）",
+++  "highlights": ["亮点1（具体到技术/工程）", "亮点2", "亮点3（可选）"],
+++  "sharp_question": "1个尖锐的第一性原理问题，直击项目能不能成立",
+++  "suggestions": ["硬核建议1（可执行的工程方向）", "建议2（可选）"],
+++  "closing": "一句结语，马斯克风格的挑战或认可"
++ }
++ """
+++
+++# 合影签名用的马斯克风格金句库（PRD 中"签名语录"需求，随机取一句）
+++MUSK_QUOTES = [
+++    "当某件事足够重要，即使胜算不大，也该去做。",
+++    "失败是一种选项。如果什么都没失败，说明你不够创新。",
+++    "把问题拆到物理层面，剩下的只是工程。",
+++    "最好的零件，是不存在的零件。",
+++    "原型很容易，量产是地狱。",
+++    "第一步，是确认这件事在物理上可能。",
+++    "别优化一个本就不该存在的东西。",
+++    "如果你需要别人鼓励才肯做，那就别做了。",
+++]
+++"""女娲.skill 备注：若后续真的接入女娲/agent runtime，可把上面 MUSK_SYSTEM_PROMPT
+++作为 persona 注入；本后端 HTTP API 路径下，直接用它作 system prompt 即可。"""
++diff --git a/backend/pipelines/llm/prompt_builder.py b/backend/pipelines/llm/prompt_builder.py
++index 63ab9c5..531f98f 100644
++--- a/backend/pipelines/llm/prompt_builder.py
+++++ b/backend/pipelines/llm/prompt_builder.py
++@@ -8,6 +8,16 @@
++ from models.session import BoothSession
++ from pipelines.llm.persona import MUSK_SYSTEM_PROMPT, REVIEW_OUTPUT_SCHEMA
++ 
+++# 一个高质量示例，用来锚定"语气 + 颗粒度"（不要照抄内容，只学风格）
+++REVIEW_EXAMPLE = """参考示例（项目：用 AI 给外卖订单自动派单、优化配送路径）：
+++{
+++  "insight": "你在给一个已经解决的问题，造第三个轮子。",
+++  "highlights": ["真接了实时路况 API，不是写死的假数据", "自己实现了贪心+模拟退火的调度，是动了手的"],
+++  "sharp_question": "美团饿了么的派单系统迭代了十年，你凭什么更优？你的算法到 1 万单还跑得动吗？",
+++  "suggestions": ["别和巨头拼通用派单，找一个他们看不上的垂直场景（园区、医院送检）", "把模拟退火换成可解释的规则+局部搜索，现场出问题你能调"],
+++  "closing": "技术不差，方向危险。换个战场，继续干。"
+++}"""
+++
++ 
++ def _build_fluency_summary(fluency: dict | None) -> str:
++     """将流畅度报告转换为自然语言段落。"""
++@@ -86,7 +96,7 @@ def build_prompt(session: BoothSession) -> list:
++ 
++ ---
++ 
++-此外，以下是该参赛者在路演过程中的表现分析：
+++以下是该参赛者在路演过程中的表现分析（请把它当评审弹药，在能支撑判断时引用一次，别堆数据）：
++ 
++ 【演讲流畅度】
++ {fluency_summary}
++@@ -96,14 +106,17 @@ def build_prompt(session: BoothSession) -> list:
++ 
++ ---
++ 
+++{REVIEW_EXAMPLE}
+++
+++---
+++
++ {REVIEW_OUTPUT_SCHEMA}
++ 
++-请按以下结构输出评审报告：
++-1. 一句话本质洞察（不超过25字）
++-2. 2-3个具体的硬核亮点
++-3. 1个尖锐的第一性原理问题
++-4. 1-2条可执行的硬核建议
++-5. 一句结语"""
+++要求：
+++- 用马斯克的口吻：短句、结论先行、对抗性、可带黑色幽默；不要客气的 AI 味。
+++- 亮点必须具体到技术/工程细节；尖锐问题要直击"这项目能不能成立"。
+++- 若转写文本几乎为空或听不出在做什么，就直接在 insight 里点破"我没听到任何工程"，不要编造亮点。
+++- 只输出 JSON，全中文，insight ≤ 25 字。"""
++ 
++     return [
++         {"role": "system", "content": MUSK_SYSTEM_PROMPT},
