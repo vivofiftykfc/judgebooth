@@ -5,8 +5,8 @@
 组装为多轮对话消息列表供 LLM API 调用。
 """
 
-from backend.models.session import BoothSession
-from backend.pipelines.llm.persona import MUSK_SYSTEM_PROMPT, REVIEW_OUTPUT_SCHEMA
+from models.session import BoothSession
+from pipelines.llm.persona import MUSK_SYSTEM_PROMPT, REVIEW_OUTPUT_SCHEMA
 
 
 def _build_fluency_summary(fluency: dict | None) -> str:

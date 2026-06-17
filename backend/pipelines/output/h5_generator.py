@@ -10,7 +10,7 @@ import json
 import uuid
 import logging
 
-from backend.models.session import BoothSession
+from models.session import BoothSession
 
 logger = logging.getLogger(__name__)
 

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import httpx
 
-from backend.config import WHISPER_URL
+from config import WHISPER_URL
 
 WHISPER_API_URL = f"{WHISPER_URL}/transcribe"
 DEFAULT_TIMEOUT = 60.0

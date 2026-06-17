@@ -12,8 +12,8 @@ import re
 
 import httpx
 
-from backend.models.session import BoothSession
-from backend.pipelines.llm.prompt_builder import build_prompt
+from models.session import BoothSession
+from pipelines.llm.prompt_builder import build_prompt
 
 logger = logging.getLogger(__name__)
 

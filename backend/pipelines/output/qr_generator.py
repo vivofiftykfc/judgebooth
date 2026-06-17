@@ -10,7 +10,7 @@ import logging
 
 import qrcode
 
-from backend.models.session import BoothSession
+from models.session import BoothSession
 
 logger = logging.getLogger(__name__)
 
