@@ -12,6 +12,8 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from debug_utils import print_debug, print_step, print_error
+
 logger = logging.getLogger(__name__)
 
 CAMERA_INDEX = 0
@@ -21,8 +23,11 @@ class CameraCapture:
     """逐帧捕获摄像头画面，支持 5fps 采样存储"""
 
     def __init__(self, index: int = 0):
-        self.cap = cv2.VideoCapture(index)
+        print_debug("CAMERA", f"打开摄像头 index={index}")
+        # 使用 DSHOW 后端加速 Windows 上的摄像头初始化（从 5s→0.5s）
+        self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
         if not self.cap.isOpened():
+            print_error("CAMERA", f"无法打开摄像头 (index={index})")
             raise RuntimeError(f"无法打开摄像头 (index={index})")
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -30,9 +35,8 @@ class CameraCapture:
 
         actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        logger.info("摄像头已打开: %dx%d @ %.1f fps",
-                     actual_w, actual_h,
-                     self.cap.get(cv2.CAP_PROP_FPS))
+        actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        print_step("CAMERA", f"摄像头已打开: {actual_w}x{actual_h} @ {actual_fps:.1f} fps")
 
     async def capture_frames(self, duration: int = 120, fps: int = 5) -> list:
         """录制 duration 秒，每秒采样 fps 帧，返回帧列表
@@ -49,21 +53,29 @@ class CameraCapture:
         interval = 1.0 / fps
         total_frames = duration * fps
 
-        logger.info("开始摄像头录制: %d 秒, %d fps, 预期 %d 帧",
-                     duration, fps, total_frames)
+        print_step("CAMERA", f"摄像头录制: {duration}s, {fps}fps, 预期 {total_frames} 帧")
+        import time
+        t0 = time.time()
 
         for i in range(total_frames):
             ret, frame = self.cap.read()
             if ret:
-                # 保存原始分辨率帧
                 frames.append(frame)
             else:
                 logger.warning("第 %d 帧读取失败", i)
+                print_error("CAMERA", f"第 {i} 帧读取失败")
+
+            # 每 30 帧打印一次进度
+            if i > 0 and i % 30 == 0:
+                elapsed = time.time() - t0
+                pct = i / total_frames * 100
+                print_debug("CAMERA", f"录制进度: {pct:.0f}% ({i}/{total_frames} 帧, {elapsed:.0f}s)")
 
             # 让出事件循环，防止阻塞
             await asyncio.sleep(interval)
 
-        logger.info("摄像头录制完成: 实际 %d 帧", len(frames))
+        elapsed = time.time() - t0
+        print_step("CAMERA", f"录制完成: 实际 {len(frames)} 帧, 耗时 {elapsed:.1f}s")
         return frames
 
     def get_best_photo(self, frames: list) -> Optional[np.ndarray]:

@@ -1,82 +1,89 @@
 """
 麦克风录制模块
 
-使用 pyaudio 从系统默认麦克风采集音频，以 WAV 格式保存到
-backend/data/audio/ 目录。
-
-典型用法:
-    audio_path = await record_audio(duration=120, sample_rate=16000)
+使用 pyaudio 回调模式采集音频，支持外部即时停止。
+以 WAV 格式保存到 backend/data/audio/ 目录。
 """
 
 import wave
 import asyncio
+import threading
 from datetime import datetime
 from pathlib import Path
 
+from debug_utils import print_debug, print_step, print_error
+
 AUDIO_DIR = Path(__file__).resolve().parents[2] / "data" / "audio"
 
-_recording_stream = None
+# 全局状态（回调线程和主协程共享）
 _recording_active = False
+_recording_frames: list[bytes] = []
+_recording_stream = None
+_recording_pyaudio = None
 
 
-async def record_audio(duration: int = 120, sample_rate: int = 16000) -> str:
+def _audio_callback(in_data, frame_count, time_info, status):
+    """PyAudio 回调：采集音频数据（在音频线程中调用）"""
+    global _recording_frames, _recording_active
+    if _recording_active:
+        _recording_frames.append(in_data)
+    return (None, 0)  # pyaudio.paContinue
+
+
+async def record_audio(duration: int = 60, sample_rate: int = 16000) -> str:
     """
-    从默认麦克风录制音频并保存为 WAV 文件。
+    从默认麦克风录制音频并保存为 WAV 文件（回调模式，支持即时停止）。
 
     参数:
-        duration:   录制时长，单位秒，默认 120
+        duration:   录制时长，单位秒，默认 60
         sample_rate: 采样率（Hz），默认 16000
 
     返回:
         生成的 WAV 文件绝对路径。
-
-    抛出:
-        ImportError:  pyaudio 未安装或当前系统没有可用麦克风。
-        RuntimeError: 录制过程中发生 I/O 错误。
-
-    逻辑:
-        1. 确保 data/audio/ 目录存在
-        2. 基于当前时间戳生成文件名 recording_YYYYMMDD_HHMMSS.wav
-        3. 打开 pyaudio 流 (paInt16, 单声道, 16kHz)
-        4. 循环读取帧直到 duration 秒结束
-        5. 用 wave 模块写入 16-bit WAV
-        6. 返回文件绝对路径
     """
-    global _recording_stream, _recording_active
+    global _recording_active, _recording_frames, _recording_stream, _recording_pyaudio
 
     try:
         import pyaudio
     except ImportError:
-        raise ImportError(
-            "pyaudio 未安装。"
-            "请运行: pip install pyaudio\n"
-            "Windows 用户如果安装失败，请先安装 wheel:\n"
-            "  pip install pipwin && pipwin install pyaudio\n"
-            "或从 https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio 下载对应版本。"
-        )
+        print_error("RECORDER", "pyaudio 未安装")
+        raise ImportError("pyaudio 未安装")
 
-    # 确保输出目录存在
+    # 重置状态
+    _recording_frames = []
+
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-
-    # 生成带时间戳的文件名
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_path = AUDIO_DIR / f"recording_{timestamp}.wav"
+    print_step("RECORDER", f"录音文件: {file_path}")
 
-    # pyaudio 参数
     chunk = 1024
     channels = 1
     audio_format = pyaudio.paInt16
 
     p = pyaudio.PyAudio()
+    _recording_pyaudio = p
+    device_count = p.get_device_count()
 
-    # 检查是否有输入设备
-    try:
-        default_input = p.get_default_input_device_info()
-    except (OSError, IOError):
+    # 列出输入设备
+    input_devices = []
+    for i in range(device_count):
+        try:
+            info = p.get_device_info_by_index(i)
+            if info.get('maxInputChannels', 0) > 0:
+                input_devices.append((i, info['name'], info['maxInputChannels']))
+        except Exception:
+            pass
+
+    # 选第一个输入设备
+    device_index = None
+    if input_devices:
+        device_index = input_devices[0][0]
+        print_debug("RECORDER", f"选择输入设备: #{device_index} - {input_devices[0][1]}")
+    else:
         p.terminate()
-        raise ImportError(
-            "未检测到麦克风输入设备。请确认麦克风已正确连接。"
-        )
+        print_error("RECORDER", "未检测到麦克风")
+        raise ImportError("未检测到麦克风输入设备")
 
     try:
         stream = p.open(
@@ -84,66 +91,80 @@ async def record_audio(duration: int = 120, sample_rate: int = 16000) -> str:
             channels=channels,
             rate=sample_rate,
             input=True,
+            input_device_index=device_index,
             frames_per_buffer=chunk,
+            stream_callback=_audio_callback,  # 回调模式！
         )
     except OSError as e:
-        p.terminate()
-        raise ImportError(
-            f"无法打开音频输入流: {e}\n"
-            "请确认麦克风未被其他程序占用且驱动正常。"
-        )
+        # 回退到默认设备
+        print_debug("RECORDER", f"指定设备失败，回退到默认: {e}")
+        try:
+            stream = p.open(
+                format=audio_format,
+                channels=channels,
+                rate=sample_rate,
+                input=True,
+                frames_per_buffer=chunk,
+                stream_callback=_audio_callback,
+            )
+        except OSError as e2:
+            p.terminate()
+            print_error("RECORDER", f"无法打开音频输入流: {e2}")
+            raise ImportError(f"无法打开音频输入流: {e2}")
 
     _recording_stream = stream
     _recording_active = True
+    stream.start_stream()
 
-    frames = []
-    total_frames = int(sample_rate / chunk * duration)
+    print_debug("RECORDER", f"录音开始（回调模式）: {sample_rate}Hz, {channels}ch, 最长 {duration}s")
 
-    try:
-        for _ in range(total_frames):
-            if not _recording_active:
-                break
-            data = stream.read(chunk, exception_on_overflow=False)
-            frames.append(data)
-            # 每 10 帧让出一次事件循环，避免阻塞其他协程
-            if len(frames) % 10 == 0:
-                await asyncio.sleep(0)
-    except Exception as e:
-        raise RuntimeError(f"录制过程中发生错误: {e}")
-    finally:
-        # 关闭流
-        if stream.is_active():
-            stream.stop_stream()
-        stream.close()
-        p.terminate()
-        _recording_stream = None
-        _recording_active = False
+    # 等待 duration 秒或 _recording_active 变为 False
+    for _ in range(duration * 10):  # 每 100ms 检查一次
+        if not _recording_active:
+            print_debug("RECORDER", "录音被外部停止")
+            break
+        await asyncio.sleep(0.1)
 
-    # 写入 WAV 文件
-    with wave.open(str(file_path), "wb") as wf:
-        wf.setnchannels(channels)
-        wf.setsampwidth(p.get_sample_size(audio_format))
-        wf.setframerate(sample_rate)
-        wf.writeframes(b"".join(frames))
+    # 保存 sample_width 再 terminate
+    sample_width = p.get_sample_size(audio_format)
+
+    # 停止
+    _recording_active = False
+    if stream.is_active():
+        stream.stop_stream()
+    stream.close()
+    p.terminate()
+    _recording_stream = None
+    _recording_pyaudio = None
+
+    total_frames = len(_recording_frames)
+    print_debug("RECORDER", f"录音结束，共采集 {total_frames} 块")
+
+    # 写入 WAV（用提前保存的 sample_width）
+    if _recording_frames:
+        with wave.open(str(file_path), "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(sample_width)
+            wf.setframerate(sample_rate)
+            wf.writeframes(b"".join(_recording_frames))
+        actual_seconds = total_frames * chunk / sample_rate
+        print_debug("RECORDER", f"WAV 已写入: {actual_seconds:.1f}s")
+        print_step("RECORDER", f"录音完成: {file_path} ({total_frames} 块)")
+    else:
+        print_error("RECORDER", "没有录到音频帧")
 
     return str(file_path.resolve())
 
 
 async def stop_recording():
-    """
-    停止正在进行的录制。
+    """停止正在进行的录制。"""
+    global _recording_active, _recording_stream, _recording_pyaudio
 
-    安全地关闭 pyaudio 流，丢弃已采集的音频数据。
-    """
-    global _recording_stream, _recording_active
+    if not _recording_active:
+        return
 
-    _recording_active = False
+    print_debug("RECORDER", "外部请求停止录音")
+    _recording_active = False  # 回调会停止追加数据
 
-    if _recording_stream is not None:
-        try:
-            if _recording_stream.is_active():
-                _recording_stream.stop_stream()
-            _recording_stream.close()
-        except Exception:
-            pass  # 流可能已经被释放
-        _recording_stream = None
+    # 不关 stream——由 record_audio 的循环检测到 _recording_active 后自己关
+    # 这样避免并发关闭冲突

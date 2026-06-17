@@ -8,8 +8,11 @@ Edge TTS 播报引擎。
 import os
 import uuid
 import logging
+import time
 
 import edge_tts
+
+from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +38,23 @@ async def synthesize_speech(
     返回:
         生成的音频文件绝对路径
     """
+    print_step("TTS", "=== TTS 语音合成 ===")
     os.makedirs(output_dir, exist_ok=True)
+
+    text = render_for_tts(review)
+    print_data("TTS", "TTS 文本", text)
+    print_debug("TTS", f"TTS 文本长度: {len(text)} 字符")
+
     filename = f"review_{uuid.uuid4().hex[:8]}.mp3"
     output_path = os.path.join(output_dir, filename)
 
-    text = render_for_tts(review)
-
+    t0 = time.time()
     communicate = edge_tts.Communicate(text, VOICE)
     await communicate.save(output_path)
+    elapsed = time.time() - t0
 
-    logger.info("TTS 音频已生成: %s", output_path)
+    print_file_size("TTS", output_path)
+    print_step("TTS", f"TTS 合成完成，耗时 {elapsed:.1f}s")
     return output_path
 
 

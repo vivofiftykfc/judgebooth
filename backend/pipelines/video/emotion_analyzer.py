@@ -11,6 +11,8 @@ from typing import Any
 
 import numpy as np
 
+from debug_utils import print_debug, print_step, print_data, print_error
+
 logger = logging.getLogger(__name__)
 
 # 关键 blendshape 名称（ARKit 标准 52 个中选 8 个）
@@ -61,11 +63,15 @@ def extract_emotion_signals(frame_features: list[dict]) -> dict[str, Any]:
     valid_frames = [f for f in frame_features if f.get("face_detected")]
     total_frames = len(frame_features) if frame_features else 1
 
+    print_step("EMOTION", f"情绪分析: {len(valid_frames)}/{total_frames} 帧检测到人脸")
+
     if not valid_frames:
         logger.warning("所有帧均未检测到人脸")
+        print_error("EMOTION", "所有帧均未检测到人脸")
         return _empty_result("未检测到人脸")
 
     face_detected_ratio = len(valid_frames) / max(total_frames, 1)
+    print_debug("EMOTION", f"人脸检测率: {face_detected_ratio:.0%}")
 
     # 2. 提取 blendshape 均值
     blendshape_means = _compute_blendshape_means(valid_frames)
@@ -107,14 +113,19 @@ def extract_emotion_signals(frame_features: list[dict]) -> dict[str, Any]:
 def _compute_blendshape_means(valid_frames: list[dict]) -> dict[str, float]:
     """计算所有有效帧中各 blendshape 的均值"""
     accum: dict[str, list[float]] = {}
+    format_logged = False
     for frame in valid_frames:
         bs_list = frame.get("blendshapes")
         if not bs_list:
             continue
         for bs in bs_list:
             # 兼容 MediaPipe 对象 (.category_name) 和 dict 格式 (get)
-            name = bs.category_name if hasattr(bs, "category_name") else bs.get("category_name", "")
-            score = bs.score if hasattr(bs, "score") else bs.get("score", 0.0)
+            is_obj = hasattr(bs, "category_name")
+            if not format_logged:
+                print_debug("EMOTION", f"blendshape 格式: {'MediaPipe 对象' if is_obj else 'dict'}")
+                format_logged = True
+            name = bs.category_name if is_obj else bs.get("category_name", "")
+            score = bs.score if is_obj else bs.get("score", 0.0)
             accum.setdefault(name, []).append(score)
 
     return {name: float(np.mean(scores)) for name, scores in accum.items()}

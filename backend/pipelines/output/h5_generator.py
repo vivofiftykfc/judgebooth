@@ -9,8 +9,10 @@ import os
 import json
 import uuid
 import logging
+import time
 
 from models.session import BoothSession
+from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
 
 logger = logging.getLogger(__name__)
 
@@ -21,31 +23,45 @@ async def generate_h5(
     session: BoothSession,
     photo_path: str | None = None,
     output_dir: str = H5_OUTPUT_DIR,
+    snapshot_data: dict | None = None,
 ) -> str:
     """
     生成评审报告的 H5 单页 HTML。
 
     包含:
-    - 项目信息（名称 + 团队名）
     - 5 段完整评审
+    - 流畅度 + 情绪数据
     - 合影图片
-    - 流畅度 + 情绪雷达图数据
     - 马斯克签名语录
-    - 分享按钮（占位）
 
     参数:
-        session: BoothSession（含 review、fluency_report、emotion_report 等）
+        session: BoothSession
         photo_path: 合影图片路径（可选）
         output_dir: 输出目录
+        snapshot_data: 快照数据（AI 生图太慢时用，防止 session 被重置丢数据）
 
     返回:
         HTML 文件绝对路径
     """
+    print_step("H5", "=== H5 页面生成 ===")
     os.makedirs(output_dir, exist_ok=True)
 
-    review = session.review or {}
-    fluency = session.fluency_report or {}
-    emotion = session.emotion_report or {}
+    t0 = time.time()
+
+    # 优先使用快照数据（防止 AI 生图期间 session 被重置）
+    if snapshot_data:
+        review = snapshot_data.get("review", {})
+        fluency = snapshot_data.get("fluency", {})
+        emotion = snapshot_data.get("emotion", {})
+        print_debug("H5", "使用快照数据")
+    else:
+        review = session.review or {}
+        fluency = session.fluency_report or {}
+        emotion = session.emotion_report or {}
+
+    print_data("H5", "review", review)
+    print_data("H5", "fluency", fluency)
+    print_data("H5", "emotion", emotion)
 
     html = _build_html(
         review=review,
@@ -53,14 +69,17 @@ async def generate_h5(
         emotion=emotion,
         photo_path=photo_path,
     )
+    print_debug("H5", f"HTML 长度: {len(html)} 字符")
 
-    filename = f"review_{uuid.uuid4().hex[:8]}.html"
+    filename = f"review_{session.session_id}.html"
     output_path = os.path.join(output_dir, filename)
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
 
-    logger.info("H5 页面已生成: %s", output_path)
+    elapsed = time.time() - t0
+    print_file_size("H5", output_path)
+    print_step("H5", f"H5 页面生成完成，耗时 {elapsed:.1f}s")
     return output_path
 
 

@@ -5,8 +5,12 @@
 对外暴露 session 级别的接口供 PipelineOrchestrator 调用。
 """
 
+import os
+import time
+
 from models.session import BoothSession
 from models.performance import FluencyReport
+from debug_utils import print_debug, print_step, print_data, print_error, print_file_size
 
 
 async def analyze_fluency(session: BoothSession) -> dict | None:
@@ -18,27 +22,50 @@ async def analyze_fluency(session: BoothSession) -> dict | None:
     返回:
         FluencyReport 的 dict 形式，失败返回 None
     """
+    t_pipeline = time.time()
+    print_step("AUDIO", "=== 音频管线启动 ===")
     try:
         from pipelines.audio.recorder import record_audio
         from pipelines.audio.whisper_engine import transcribe
         from pipelines.audio.fluency_analyzer import analyze_fluency as _calc
 
-        # 1. 录音
-        audio_path = await record_audio(duration=120, sample_rate=16000)
-        session.audio_path = audio_path
+        # 1. 录音（仅当还没录过时）
+        if session.audio_path and os.path.isfile(session.audio_path):
+            audio_path = session.audio_path
+            print_debug("AUDIO", f"使用已有录音: {audio_path}")
+            print_file_size("AUDIO", audio_path)
+        else:
+            print_step("AUDIO", ">> 录音阶段（10s，路演已结束，只需采集用户刚才说的内容）")
+            t0 = time.time()
+            # 此时用户已结束路演，只录 10s 就够了（正常应在 presenting 阶段录完）
+            audio_path = await record_audio(duration=60, sample_rate=16000)
+            session.audio_path = audio_path
+            print_debug("AUDIO", f"录音完成，耗时 {time.time()-t0:.1f}s")
+            print_file_size("AUDIO", audio_path)
 
         # 2. 转写
+        print_step("AUDIO", ">> Whisper 转写阶段")
+        t0 = time.time()
         whisper_result = await transcribe(audio_path)
+        print_debug("AUDIO", f"转写完成，耗时 {time.time()-t0:.1f}s")
         if whisper_result is None:
             session.error = "语音转写失败（Whisper 服务不可用）"
+            print_error("AUDIO", "Whisper 转写返回 None")
             return None
 
         session.transcript = whisper_result.get("text", "")
+        print_data("AUDIO", "转写文本", session.transcript)
+        print_data("AUDIO", "片段数", whisper_result.get("segments", []))
+        print_debug("AUDIO", f"检测语言: {whisper_result.get('language', '?')}")
 
         # 3. 流畅度分析
+        print_step("AUDIO", ">> 流畅度分析阶段")
+        t0 = time.time()
         segments = whisper_result.get("segments", [])
         metrics = _calc(segments)
         metrics["summary"] = _generate_summary(metrics)
+        print_debug("AUDIO", f"流畅度分析完成，耗时 {time.time()-t0:.2f}s")
+        print_data("AUDIO", "流畅度指标", metrics)
 
         report = FluencyReport(
             avg_wpm=metrics.get("avg_wpm", 0),
@@ -52,13 +79,16 @@ async def analyze_fluency(session: BoothSession) -> dict | None:
         ).model_dump()
 
         session.fluency_report = report
+        print_step("AUDIO", f"=== 音频管线完成，总耗时 {time.time()-t_pipeline:.1f}s ===")
         return report
 
     except ImportError as e:
         session.error = f"音频管线模块缺失: {e}"
+        print_error("AUDIO", f"模块缺失: {e}")
         return None
     except Exception as e:
         session.error = f"音频分析异常: {e}"
+        print_error("AUDIO", f"异常: {e}")
         return None
 
 

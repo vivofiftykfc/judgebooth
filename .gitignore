@@ -8,3 +8,21 @@ backend/*.task
 backend/test_h5.html
 *.png
 .env
+
+# 压缩包 / 备份文件
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# 旧版备份目录
+hackathon/
+
+# IDE / 系统文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

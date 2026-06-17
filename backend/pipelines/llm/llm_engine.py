@@ -14,6 +14,7 @@ import httpx
 
 from models.session import BoothSession
 from pipelines.llm.prompt_builder import build_prompt
+from debug_utils import print_debug, print_step, print_data, print_error
 
 logger = logging.getLogger(__name__)
 
@@ -46,25 +47,51 @@ async def generate_review(session: BoothSession) -> dict:
     5. 不满足则重试（最多 2 次）
     6. 返回 review dict
     """
+    print_step("LLM", "=== 评审生成 ===")
     messages = build_prompt(session)
+
+    # 检查 API Key
+    if not LLM_API_KEY:
+        print_error("LLM", "LLM_API_KEY 未设置，使用 fallback 评审")
+        session.error = "LLM_API_KEY 未设置"
+        return dict(FALLBACK_REVIEW)
+
+    print_debug("LLM", f"API URL: {LLM_API_URL}")
+    print_debug("LLM", f"Model: {LLM_MODEL}")
+    print_data("LLM", "system 消息长度", len(messages[0].get("content", "")))
+    print_data("LLM", "user 消息长度", len(messages[1].get("content", "")))
 
     last_error: Exception | None = None
     for attempt in range(3):
+        print_step("LLM", f">> API 调用第 {attempt+1}/3 次尝试")
         try:
+            import time
+            t0 = time.time()
             response_data = await _call_llm_api(messages)
+            elapsed = time.time() - t0
+            print_debug("LLM", f"API 响应完成，耗时 {elapsed:.1f}s")
+            print_data("LLM", "原始响应（前200字符）", response_data[:200])
+
             review = await _parse_review_response(response_data)
             if _validate_review(review):
+                print_step("LLM", "评审 JSON 验证通过")
+                print_data("LLM", "生成的 insight", review.get("insight", ""))
                 return review
+
             logger.warning("LLM 响应验证失败（attempt %d/3），重试中...", attempt + 1)
+            print_error("LLM", f"响应验证失败（attempt {attempt+1}/3）")
         except Exception as exc:
             last_error = exc
             logger.error("LLM API 调用异常（attempt %d/3）: %s", attempt + 1, exc)
+            print_error("LLM", f"API 调用异常: {exc}")
 
     error_msg = (
         f"LLM 评审生成失败: {last_error}" if last_error else "LLM 响应验证不通过"
     )
     session.error = error_msg
     logger.error("使用 fallback 评审: %s", error_msg)
+    print_error("LLM", f"使用 fallback 评审: {error_msg}")
+    print_data("LLM", "fallback_review", FALLBACK_REVIEW)
     return dict(FALLBACK_REVIEW)
 
 
@@ -81,6 +108,11 @@ async def _call_llm_api(messages: list) -> str:
     if not LLM_API_KEY:
         raise ValueError("LLM_API_KEY 未设置，无法调用 LLM API")
 
+    # 截断 API Key 用于 debug 显示
+    key_preview = LLM_API_KEY[:8] + "..." if len(LLM_API_KEY) > 8 else "?"
+    print_debug("LLM", f"使用 API Key: {key_preview}")
+    print_debug("LLM", f"请求 URL: {LLM_API_URL}")
+
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LLM_API_KEY}",
@@ -94,8 +126,12 @@ async def _call_llm_api(messages: list) -> str:
         "messages": messages,
     }
 
+    import time
+    t0 = time.time()
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(LLM_API_URL, headers=headers, json=body)
+        elapsed = time.time() - t0
+        print_debug("LLM", f"HTTP 响应: status={response.status_code}, 耗时 {elapsed:.1f}s")
         response.raise_for_status()
         data = response.json()
 
@@ -104,10 +140,15 @@ async def _call_llm_api(messages: list) -> str:
     if not choices:
         raise ValueError("LLM 响应中没有 choices")
 
+    finish_reason = choices[0].get("finish_reason", "?")
+    usage = data.get("usage", {})
+    print_debug("LLM", f"finish_reason={finish_reason}, usage={usage}")
+
     content = choices[0].get("message", {}).get("content", "")
     if not content:
         raise ValueError("LLM 响应中 message.content 为空")
 
+    print_debug("LLM", f"响应内容长度: {len(content)} 字符")
     return content
 
 
