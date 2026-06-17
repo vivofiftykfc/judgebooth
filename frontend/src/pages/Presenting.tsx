@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import Countdown from '../components/Countdown';
 import { useBoothStore } from '../stores/boothStore';
+import { useFaceMesh } from '../hooks/useFaceMesh';
 
 const FRAME_INTERVAL_MS = 200; // 5fps
 
@@ -13,9 +14,14 @@ function Presenting() {
   const endRef = useRef(false);
   const frameTimerRef = useRef<number>(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const overlayRef = useRef<HTMLCanvasElement>(null);
 
   const [started, setStarted] = useState(false);
   const [seconds, setSeconds] = useState(60);
+  const [faceLocked, setFaceLocked] = useState(false);
+
+  // 浏览器端实时人脸 mesh 叠加（demo 增强）
+  useFaceMesh(videoRef, overlayRef, started, setFaceLocked);
 
   // --- 清残留帧（回到 Presenting 时重置状态） ---
   useEffect(() => {
@@ -31,7 +37,10 @@ function Presenting() {
 
     // 1. 开摄像头预览
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false,
+      });
       streamRef.current = stream;
       if (videoRef.current) videoRef.current.srcObject = stream;
     } catch {
@@ -211,17 +220,33 @@ function Presenting() {
         animate={{ opacity: 1, scale: 1 }}
         transition={{ delay: 0.6, duration: 0.4 }}
       >
-        <div className="w-48 h-36 md:w-64 md:h-48 bg-gray-900 border border-gray-700 rounded-lg flex items-center justify-center overflow-hidden">
+        <div className="relative aspect-[4/3] w-[44vw] max-w-[520px] bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
           <video
             ref={videoRef}
             autoPlay
             muted
             playsInline
-            className="w-full h-full object-cover"
+            className="absolute inset-0 w-full h-full object-cover"
           />
+          {/* 关键点 mesh 叠加层 */}
+          <canvas
+            ref={overlayRef}
+            className="absolute inset-0 w-full h-full pointer-events-none"
+          />
+          {/* 检测状态徽标 */}
+          <div className="absolute top-2 left-2 px-2 py-1 rounded text-xs font-mono flex items-center gap-1.5 bg-black/60">
+            <span
+              className={`inline-block w-2 h-2 rounded-full ${
+                faceLocked ? 'bg-green-400' : 'bg-red-500'
+              }`}
+            />
+            <span className={faceLocked ? 'text-green-300' : 'text-gray-400'}>
+              {faceLocked ? '已锁定面部 478 点' : '正在寻找面部…'}
+            </span>
+          </div>
         </div>
         <p className="text-gray-600 text-center mt-2 text-sm">
-          camera preview
+          camera preview · 实时面部识别
         </p>
       </motion.div>
 

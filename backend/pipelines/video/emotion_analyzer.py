@@ -197,20 +197,31 @@ def _compute_gaze_percentage(valid_frames: list[dict]) -> float:
 def _compute_head_stability(valid_frames: list[dict]) -> float:
     """计算头部稳定度（0-100）
 
-    基于 yaw 角的标准差：分数 = 100 - yaw_std * 2
+    综合 yaw（左右转头）、pitch（点头）、roll（歪头）三个轴的抖动：
+    取三轴标准差的均方根，分数 = 100 - 合并抖动 * 2。
     头部晃动越大，分数越低。
+
+    注意：旧实现只用 yaw 一个轴，导致点头/歪头/移动时仍判"平稳"。
     """
-    yaw_values = []
+    yaw_values: list[float] = []
+    pitch_values: list[float] = []
+    roll_values: list[float] = []
     for frame in valid_frames:
         pose = frame.get("head_pose")
         if pose is not None:
             yaw_values.append(pose.get("yaw", 0.0))
+            pitch_values.append(pose.get("pitch", 0.0))
+            roll_values.append(pose.get("roll", 0.0))
 
     if len(yaw_values) < 2:
         return 100.0
 
     yaw_std = float(np.std(yaw_values))
-    score = 100.0 - yaw_std * 2.0
+    pitch_std = float(np.std(pitch_values))
+    roll_std = float(np.std(roll_values))
+    # 三轴标准差的均方根，综合反映任意方向的头部晃动
+    combined_std = (yaw_std ** 2 + pitch_std ** 2 + roll_std ** 2) ** 0.5
+    score = 100.0 - combined_std * 2.0
     return max(0.0, min(100.0, score))
 
 
