@@ -30,15 +30,15 @@ CLOSING_COLOR = (255, 255, 255)
 
 
 async def compose_photo(
-    camera_best_photo_path: str,
-    review: dict,
+    camera_best_photo_path: str | None = None,
+    review: dict | None = None,
     output_dir: str = "D:/hks/backend/data/photos",
 ) -> str:
     """
     合成合影。
 
     逻辑:
-    1. 加载摄像头最佳帧
+    1. 加载摄像头最佳帧（如果为 None 则创建占位图）
     2. 用 Pillow 叠加马斯克签名 PNG
     3. 叠加活动 Logo PNG
     4. 底部叠加一句结语
@@ -46,8 +46,8 @@ async def compose_photo(
     6. 返回路径
 
     参数:
-        camera_best_photo_path: 摄像头最佳帧图片路径
-        review: 评审报告 dict（含 closing 字段）
+        camera_best_photo_path: 摄像头最佳帧路径（可选，None 时创建占位图）
+        review: 评审报告 dict（含 closing 字段，可选）
         output_dir: 输出目录
 
     返回:
@@ -55,10 +55,13 @@ async def compose_photo(
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    try:
-        img = Image.open(camera_best_photo_path).convert("RGB")
-    except FileNotFoundError:
-        logger.warning("摄像头最佳帧不存在: %s，创建纯色占位图", camera_best_photo_path)
+    if camera_best_photo_path and os.path.isfile(camera_best_photo_path):
+        try:
+            img = Image.open(camera_best_photo_path).convert("RGB")
+        except Exception:
+            img = Image.new("RGB", (OUTPUT_WIDTH, OUTPUT_HEIGHT), (30, 30, 30))
+    else:
+        logger.warning("摄像头最佳帧不存在，创建纯色占位图")
         img = Image.new("RGB", (OUTPUT_WIDTH, OUTPUT_HEIGHT), (30, 30, 30))
 
     # 调整尺寸到标准输出
@@ -71,7 +74,7 @@ async def compose_photo(
     img = _overlay_logo(img, LOGO_PATH)
 
     # 叠加结语
-    closing_text = review.get("closing", "")
+    closing_text = review.get("closing", "") if review else ""
     if closing_text:
         img = _overlay_closing_text(img, closing_text)
 

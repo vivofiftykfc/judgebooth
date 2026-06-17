@@ -1,14 +1,12 @@
 import os
 
-# Whisper STT service
-WHISPER_URL = os.getenv("WHISPER_URL", "http://localhost:9090")
-
-# LLM API
+# LLM API (DeepSeek / OpenAI 兼容格式)
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_API_URL = os.getenv("LLM_API_URL", "https://api.anthropic.com/v1/messages")
+LLM_API_URL = os.getenv("LLM_API_URL", "https://api.deepseek.com/v1/chat/completions")
+LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
 
 # Edge TTS
-EDGE_TTS_VOICE = "zh-CN-Yunxi"
+EDGE_TTS_VOICE = "zh-CN-YunxiNeural"
 
 # Camera
 CAMERA_INDEX = 0

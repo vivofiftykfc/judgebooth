@@ -13,7 +13,7 @@ import edge_tts
 
 logger = logging.getLogger(__name__)
 
-VOICE = "zh-CN-Yunxi"  # 沉稳男声
+VOICE = "zh-CN-YunxiNeural"  # 沉稳男声
 
 
 async def synthesize_speech(

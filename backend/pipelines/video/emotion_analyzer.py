@@ -112,8 +112,9 @@ def _compute_blendshape_means(valid_frames: list[dict]) -> dict[str, float]:
         if not bs_list:
             continue
         for bs in bs_list:
-            name = bs.get("category_name", "")
-            score = bs.get("score", 0.0)
+            # 兼容 MediaPipe 对象 (.category_name) 和 dict 格式 (get)
+            name = bs.category_name if hasattr(bs, "category_name") else bs.get("category_name", "")
+            score = bs.score if hasattr(bs, "score") else bs.get("score", 0.0)
             accum.setdefault(name, []).append(score)
 
     return {name: float(np.mean(scores)) for name, scores in accum.items()}
@@ -218,11 +219,11 @@ def calc_blink_rate(
         left = 0.0
         right = 0.0
         for bs in bs_list:
-            name = bs.get("category_name", "")
+            name = bs.category_name if hasattr(bs, "category_name") else bs.get("category_name", "")
             if name == _EYE_BLINK_LEFT:
-                left = bs.get("score", 0.0)
+                left = bs.score if hasattr(bs, "score") else bs.get("score", 0.0)
             elif name == _EYE_BLINK_RIGHT:
-                right = bs.get("score", 0.0)
+                right = bs.score if hasattr(bs, "score") else bs.get("score", 0.0)
         blink_scores.append((left + right) / 2.0)
 
     if not blink_scores:

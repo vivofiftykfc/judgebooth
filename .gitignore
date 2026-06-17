@@ -4,4 +4,7 @@ node_modules/
 dist/
 .vite/
 backend/data/
+backend/*.task
+backend/test_h5.html
+*.png
 .env

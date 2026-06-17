@@ -1,7 +1,7 @@
 """
 LLM API 调用封装。
 
-调用 Anthropic 风格的消息 API 生成评审报告，
+调用 OpenAI 兼容格式的消息 API（支持 DeepSeek、OpenAI 等）生成评审报告，
 包含重试、解析验证和 fallback 机制。
 """
 
@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_API_URL = os.getenv(
-    "LLM_API_URL", "https://api.anthropic.com/v1/messages"
+    "LLM_API_URL", "https://api.deepseek.com/v1/chat/completions"
 )
-LLM_MODEL = os.getenv("LLM_MODEL", "claude-sonnet-4-20250514")
+LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
 
 
 # fallback 评审（当 LLM 不可用时）
@@ -40,38 +40,26 @@ async def generate_review(session: BoothSession) -> dict:
 
     逻辑:
     1. 调用 prompt_builder.build_prompt(session) 获取消息
-    2. POST 到 LLM_API_URL
+    2. POST 到 LLM_API_URL（OpenAI 兼容格式）
     3. 从响应中解析 JSON
     4. 验证包含 insight, highlights, sharp_question, suggestions, closing
     5. 不满足则重试（最多 2 次）
     6. 返回 review dict
-
-    错误处理:
-    - API 调用失败 → session.error 记录，返回 fallback 评审
-    - 解析失败 → 尝试从文本中提取 JSON
-    - 全部失败 → 返回硬编码的占位评审
     """
     messages = build_prompt(session)
 
     last_error: Exception | None = None
-    for attempt in range(3):  # 初始调用 + 最多 2 次重试
+    for attempt in range(3):
         try:
             response_data = await _call_llm_api(messages)
             review = await _parse_review_response(response_data)
-
             if _validate_review(review):
                 return review
-
-            logger.warning(
-                "LLM 响应验证失败（attempt %d/3），重试中...", attempt + 1
-            )
+            logger.warning("LLM 响应验证失败（attempt %d/3），重试中...", attempt + 1)
         except Exception as exc:
             last_error = exc
-            logger.error(
-                "LLM API 调用异常（attempt %d/3）: %s", attempt + 1, exc
-            )
+            logger.error("LLM API 调用异常（attempt %d/3）: %s", attempt + 1, exc)
 
-    # 所有尝试失败，记录错误并使用 fallback
     error_msg = (
         f"LLM 评审生成失败: {last_error}" if last_error else "LLM 响应验证不通过"
     )
@@ -82,45 +70,45 @@ async def generate_review(session: BoothSession) -> dict:
 
 async def _call_llm_api(messages: list) -> str:
     """
-    实际的 HTTP 调用，带超时和重试。
+    OpenAI 兼容格式的 HTTP 调用。
 
     参数:
         messages: 多轮对话消息列表
 
     返回:
         LLM 响应的文本内容
-
-    抛出:
-        httpx.HTTPError: 网络/HTTP 错误
-        ValueError: 响应格式异常
     """
     if not LLM_API_KEY:
         raise ValueError("LLM_API_KEY 未设置，无法调用 LLM API")
 
     headers = {
         "Content-Type": "application/json",
-        "x-api-key": LLM_API_KEY,
-        "anthropic-version": "2023-06-01",
+        "Authorization": f"Bearer {LLM_API_KEY}",
     }
 
     body = {
         "model": LLM_MODEL,
         "max_tokens": 1024,
+        "temperature": 0.7,
+        "response_format": {"type": "json_object"},
         "messages": messages,
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(LLM_API_URL, headers=headers, json=body)
         response.raise_for_status()
         data = response.json()
 
-    # 解析 Anthropic 消息格式
-    content_blocks = data.get("content", [])
-    for block in content_blocks:
-        if block.get("type") == "text":
-            return block.get("text", "")
+    # 解析 OpenAI 兼容格式
+    choices = data.get("choices", [])
+    if not choices:
+        raise ValueError("LLM 响应中没有 choices")
 
-    raise ValueError("LLM 响应中没有 text 类型的内容块")
+    content = choices[0].get("message", {}).get("content", "")
+    if not content:
+        raise ValueError("LLM 响应中 message.content 为空")
+
+    return content
 
 
 async def _parse_review_response(response_text: str) -> dict:
@@ -132,17 +120,16 @@ async def _parse_review_response(response_text: str) -> dict:
     2. 尝试从 markdown 代码块中提取 JSON（```json ... ```）
     3. 尝试用正则查找最外层的 JSON 对象
     """
-    # 策略 1: 整体解析
     text = response_text.strip()
+
+    # 策略 1: 整体解析
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
     # 策略 2: 提取 markdown 代码块
-    code_block_match = re.search(
-        r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL
-    )
+    code_block_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     if code_block_match:
         try:
             return json.loads(code_block_match.group(1).strip())
@@ -161,12 +148,7 @@ async def _parse_review_response(response_text: str) -> dict:
 
 
 def _validate_review(review: dict) -> bool:
-    """
-    验证 review dict 包含所有必要字段。
-
-    必要字段: insight, highlights, sharp_question, suggestions, closing
-    highlights 和 suggestions 必须是列表类型。
-    """
+    """验证 review dict 包含所有必要字段。"""
     required_fields = ["insight", "highlights", "sharp_question", "suggestions", "closing"]
     for field in required_fields:
         if field not in review:
