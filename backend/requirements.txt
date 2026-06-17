@@ -1,0 +1,12 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sse-starlette>=2.1.0
+httpx>=0.28.0
+mediapipe>=0.10.0
+opencv-python>=4.10.0
+numpy>=1.26.0
+pyaudio>=0.2.14
+edge-tts>=6.1.0
+Pillow>=10.0.0
+qrcode[pil]>=7.4.0
+python-multipart>=0.0.12

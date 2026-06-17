@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  overflow: hidden;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+}

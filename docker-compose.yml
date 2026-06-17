@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  whisper-live:
+    image: hwdsl2/whisper-live:latest
+    container_name: hks-whisper
+    ports:
+      - "9090:9090"
+    environment:
+      - WHISPER_MODEL=small
+      - WHISPER_LANG=zh
+      - WHISPER_BEAM_SIZE=3
+      - VAD_FILTER=true
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
