@@ -80,17 +80,7 @@ async def analyze_emotion(session: BoothSession) -> dict | None:
             print_error("VIDEO", "所有帧解码失败")
             return None
 
-        # 3. 保存第一帧作为最佳合影帧
-        if first_frame is not None:
-            h, w = first_frame.shape[:2]
-            print_debug("VIDEO", f"第一帧尺寸: {w}x{h}")
-            photo_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "photos")
-            os.makedirs(photo_dir, exist_ok=True)
-            best_frame_path = os.path.join(photo_dir, f"best_frame_{uuid.uuid4().hex[:8]}.jpg")
-            cv2.imwrite(best_frame_path, first_frame)
-            session.photo_path = best_frame_path
-            print_debug("VIDEO", f"最佳帧已保存: {best_frame_path}")
-            print_file_size("VIDEO", best_frame_path)
+        # 3.（最佳合影帧的选取移到逐帧检测之后，按"正脸+睁眼+清晰"打分挑）
 
         # 4. 初始化 FaceLandmarker
         print_step("VIDEO", ">> FaceLandmarker 初始化")
@@ -120,6 +110,44 @@ async def analyze_emotion(session: BoothSession) -> dict | None:
         face_ratio = face_detected_count / len(frames) * 100 if frames else 0
         print_debug("VIDEO", f"面部检测完成，耗时 {time.time()-t0:.1f}s")
         print_debug("VIDEO", f"面部检测率: {face_detected_count}/{len(frames)} ({face_ratio:.0f}%)")
+
+        # 5.5 选最佳合影帧：正脸(yaw/pitch 近 0) + 睁眼 + 清晰 → 作为换头底图
+        best_idx, best_score = -1, -1e18
+        for i, feat in enumerate(frame_features):
+            if not feat.get("face_detected"):
+                continue
+            pose = feat.get("head_pose") or {}
+            frontal = abs(pose.get("yaw", 90)) + abs(pose.get("pitch", 90))  # 越小越正脸
+            blink = 0.0
+            for bs in (feat.get("blendshapes") or []):
+                if bs.get("category_name") in ("eyeBlinkLeft", "eyeBlinkRight"):
+                    blink += bs.get("score", 0.0)
+            try:
+                gray = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)
+                sharp = cv2.Laplacian(gray, cv2.CV_64F).var()   # 越大越清晰
+            except Exception:
+                sharp = 0.0
+            score = -frontal - 60.0 * blink + sharp * 0.02
+            if score > best_score:
+                best_score, best_idx = score, i
+
+        if best_idx < 0:
+            best_idx = len(frames) // 2   # 没检测到正脸 → 退回中间帧
+            print_debug("VIDEO", "无正脸帧，退回中间帧作合影")
+        chosen = frames[best_idx]
+
+        photo_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "photos")
+        os.makedirs(photo_dir, exist_ok=True)
+        best_frame_path = os.path.join(photo_dir, f"best_frame_{uuid.uuid4().hex[:8]}.jpg")
+        ok, buf = cv2.imencode(".jpg", chosen)   # 中文路径用 imencode+写字节，绕开 cv2.imwrite
+        if ok:
+            with open(best_frame_path, "wb") as f:
+                f.write(buf.tobytes())
+            session.photo_path = best_frame_path
+            print_debug("VIDEO", f"最佳合影帧 = 第 {best_idx+1}/{len(frames)} 帧 (score={best_score:.0f})")
+            print_file_size("VIDEO", best_frame_path)
+        else:
+            print_error("VIDEO", "最佳帧编码失败")
 
         # 6. 情绪提取
         print_step("VIDEO", ">> 情绪指标提取")
