@@ -16,7 +16,9 @@ from debug_utils import print_debug, print_step, print_data, print_error, print_
 
 logger = logging.getLogger(__name__)
 
-QR_OUTPUT_DIR = "D:/hks/backend/data/qr"
+QR_OUTPUT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "qr")
 
 
 async def generate_qr(session: BoothSession) -> str:

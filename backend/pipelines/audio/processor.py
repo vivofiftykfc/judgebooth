@@ -29,7 +29,29 @@ async def analyze_fluency(session: BoothSession) -> dict | None:
         from pipelines.audio.whisper_engine import transcribe
         from pipelines.audio.fluency_analyzer import analyze_fluency as _calc
 
-        # 1. 录音（仅当还没录过时）
+        # 0. 优先用前端 Soniox 实时转写（已带词级时间戳）→ 跳过录音 + whisper
+        if session.transcript is not None and session.transcript_segments is not None:
+            print_step("AUDIO", ">> 使用前端 Soniox 实时转写（跳过录音 + Whisper）")
+            print_data("AUDIO", "Soniox 转写文本", session.transcript)
+            segments = session.transcript_segments
+            metrics = _calc(segments)
+            metrics["summary"] = _generate_summary(metrics)
+            print_data("AUDIO", "流畅度指标", metrics)
+            report = FluencyReport(
+                avg_wpm=metrics.get("avg_wpm", 0),
+                pause_count=metrics.get("pause_count", 0),
+                longest_pause_seconds=metrics.get("longest_pause_seconds", 0),
+                filler_word_count=metrics.get("filler_word_count", 0),
+                filler_examples=metrics.get("filler_examples", []),
+                stutter_count=metrics.get("stutter_count", 0),
+                wpm_volatility=metrics.get("wpm_volatility", 0),
+                summary=metrics.get("summary", ""),
+            ).model_dump()
+            session.fluency_report = report
+            print_step("AUDIO", f"=== 音频管线完成（Soniox），总耗时 {time.time()-t_pipeline:.1f}s ===")
+            return report
+
+        # 1. 录音（仅当还没录过时）—— Soniox 不可用时的离线兜底
         if session.audio_path and os.path.isfile(session.audio_path):
             audio_path = session.audio_path
             print_debug("AUDIO", f"使用已有录音: {audio_path}")

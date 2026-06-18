@@ -1,85 +1,141 @@
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
+import muskSkeptical from '../assets/musk_skeptical.png';
+
+// 分析"终端"滚动的伪日志（第一性原理味道，循环播放填充等待）
+const LOG_POOL = [
+  '转写语音流',
+  '读取 478 个面部关键点',
+  '评估紧张度 / 眼神接触',
+  '拆解到第一性原理',
+  '计算笨蛋指数（价值 ÷ 复杂度）',
+  '检验物理可行性',
+  '质疑核心需求',
+  '搜索可删除的部分',
+  '比对现有方案的差距',
+  '组织措辞',
+];
+
+interface Line {
+  id: number;
+  text: string;
+}
 
 function Thinking() {
+  const [log, setLog] = useState<Line[]>([]);
+  const idRef = useRef(0);
+
+  useEffect(() => {
+    let i = 0;
+    const tick = () => {
+      idRef.current += 1;
+      setLog((prev) => {
+        const next = [...prev, { id: idRef.current, text: LOG_POOL[i % LOG_POOL.length] }];
+        i += 1;
+        return next.slice(-7);
+      });
+    };
+    tick();
+    const id = setInterval(tick, 1500);
+    return () => clearInterval(id);
+  }, []);
+
   return (
-    <motion.div
-      className="flex flex-col items-center justify-center w-full h-full px-8"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.5 }}
-    >
-      <motion.div
-        className="relative mb-12"
-        animate={{
-          scale: [1, 1.15, 1],
-          opacity: [0.6, 1, 0.6],
-        }}
-        transition={{
-          duration: 2,
-          repeat: Infinity,
-          ease: 'easeInOut',
-        }}
-      >
-        <div className="w-24 h-24 md:w-32 md:h-32 rounded-full border-2 border-gray-500 flex items-center justify-center">
-          <svg
-            className="w-12 h-12 md:w-16 md:h-16 text-gray-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.5}
-              d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
-            />
-          </svg>
+    <div className="chamber w-full h-full relative flex flex-col px-[3vw] py-[2.4vh]">
+      <div className="grain" />
+
+      {/* 顶栏 */}
+      <header className="absolute top-[2.4vh] left-[3vw] right-[3vw] flex items-center justify-between z-30">
+        <div className="flex items-center gap-3">
+          <span className="font-display text-2xl leading-none">
+            <span style={{ color: 'var(--signal)' }}>X</span>
+            <span className="text-[var(--ink)]">.AI</span>
+          </span>
+          <span className="hud-label hidden sm:inline">Temporary Review Booth</span>
         </div>
-      </motion.div>
+        <span className="hud-label flex items-center gap-1.5" style={{ color: 'var(--signal)' }}>
+          <span className="w-2 h-2 rounded-full bg-[var(--signal)] rec-dot" />
+          Analyzing
+        </span>
+      </header>
 
-      <motion.h2
-        className="text-white font-bold text-center leading-tight mb-4"
-        style={{ fontSize: 'clamp(24px, 3.5vw, 48px)' }}
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.3, duration: 0.5 }}
-      >
-        Analyzing with first principles...
-      </motion.h2>
+      <main className="flex-1 min-h-0 grid grid-cols-[40%_1fr] gap-[2.4vw] mt-[5vh] z-20">
+        {/* 左：马斯克在审视 */}
+        <motion.div
+          className="relative rounded-md overflow-hidden border border-[var(--line)] bg-black"
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.6 }}
+        >
+          <img src={muskSkeptical} alt="Evaluator"
+               className="breathe w-full h-full object-cover" />
+          <div className="scanbar" />
+          <div className="absolute inset-x-0 bottom-0 h-1/3 pointer-events-none"
+               style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.78), transparent)' }} />
+          <div className="absolute left-3 bottom-3 z-10">
+            <div className="font-display text-[var(--ink)] leading-none"
+                 style={{ fontSize: 'clamp(20px, 2.2vw, 34px)' }}>
+              ELON&nbsp;MUSK
+            </div>
+            <div className="hud-label mt-1" style={{ color: 'var(--signal)' }}>◣ Deconstructing</div>
+          </div>
+        </motion.div>
 
-      <motion.p
-        className="text-gray-500 text-center"
-        style={{ fontSize: 'clamp(16px, 2vw, 24px)' }}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.6, duration: 0.5 }}
-      >
-        Breaking down your project at the fundamental level
-      </motion.p>
+        {/* 右：拆解过程 */}
+        <div className="flex flex-col min-h-0">
+          <motion.div className="hud-label mb-4" style={{ color: 'var(--signal)' }}
+                      initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}>
+            ▍First-Principles Breakdown
+          </motion.div>
+          <motion.h1
+            className="font-display text-[var(--ink)] leading-[0.95]"
+            style={{ fontSize: 'clamp(34px, 5vw, 76px)' }}
+            initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4, duration: 0.6 }}
+          >
+            正在拆解
+            <br />
+            <span style={{ color: 'var(--muted)' }}>你的项目</span>
+          </motion.h1>
+          <motion.p className="text-[var(--muted)] mt-4 leading-relaxed max-w-md"
+                    style={{ fontSize: 'clamp(14px, 1.4vw, 18px)' }}
+                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.7 }}>
+            把它砍到物理层面，看还剩下什么。
+          </motion.p>
 
-      <motion.div
-        className="flex gap-2 mt-12"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.9, duration: 0.5 }}
-      >
-        {[0, 1, 2].map((i) => (
-          <motion.div
-            key={i}
-            className="w-2 h-2 md:w-3 md:h-3 rounded-full bg-gray-500"
-            animate={{
-              opacity: [0.3, 1, 0.3],
-            }}
-            transition={{
-              duration: 1.2,
-              repeat: Infinity,
-              delay: i * 0.3,
-              ease: 'easeInOut',
-            }}
-          />
-        ))}
-      </motion.div>
-    </motion.div>
+          {/* 分析终端 */}
+          <div className="mt-6 flex-1 min-h-0 rounded-md border border-[var(--line)] bg-black/40 p-4 overflow-hidden font-hud"
+               style={{ fontSize: 'clamp(12px, 1.1vw, 15px)' }}>
+            {log.map((l, idx) => {
+              const isLast = idx === log.length - 1;
+              return (
+                <motion.div
+                  key={l.id}
+                  className="flex items-center gap-2 py-0.5"
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: isLast ? 1 : 0.45, x: 0 }}
+                  transition={{ duration: 0.35 }}
+                  style={{ color: isLast ? 'var(--signal)' : 'var(--muted)' }}
+                >
+                  <span className="opacity-70">{isLast ? '▸' : '✓'}</span>
+                  <span>{l.text}</span>
+                  {isLast && <span className="ml-1 rec-dot">_</span>}
+                </motion.div>
+              );
+            })}
+          </div>
+
+          {/* 不确定进度条 */}
+          <div className="relative h-[3px] mt-4 bg-white/5 overflow-hidden rounded-full">
+            <motion.div
+              className="absolute top-0 h-full w-1/3 rounded-full"
+              style={{ background: 'var(--signal)' }}
+              animate={{ x: ['-110%', '320%'] }}
+              transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
+            />
+          </div>
+        </div>
+      </main>
+    </div>
   );
 }
 

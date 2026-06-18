@@ -1,0 +1,16 @@
+*
+ode_modules\*
+*\__pycache__\*
+*\data\*
+*\.git\*
+*\.claude\*
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.pyc
+*\dist\*
+*\ .vite\*
+*.task
+JudgeBooth.rar
+c48c4fd8*.png

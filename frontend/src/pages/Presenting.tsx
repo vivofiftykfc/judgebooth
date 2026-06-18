@@ -1,41 +1,46 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import Countdown from '../components/Countdown';
 import { useBoothStore } from '../stores/boothStore';
 import { useFaceMesh } from '../hooks/useFaceMesh';
+import { useSoniox } from '../hooks/useSoniox';
+import MuskPresence from '../components/MuskPresence';
+import muskNeutral from '../assets/musk_neutral.png';
+import muskSkeptical from '../assets/musk_skeptical.png';
 
 const FRAME_INTERVAL_MS = 200; // 5fps
 
 function Presenting() {
-  const countdown = useBoothStore((state) => state.countdown);
-  const step = useBoothStore((state) => state.step);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const endRef = useRef(false);
   const frameTimerRef = useRef<number>(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
+  const sessionRef = useRef(Math.random().toString(36).slice(2, 8).toUpperCase());
 
   const [started, setStarted] = useState(false);
   const [seconds, setSeconds] = useState(60);
+  const [total, setTotal] = useState(60);
   const [faceLocked, setFaceLocked] = useState(false);
 
-  // 浏览器端实时人脸 mesh 叠加（demo 增强）
+  // 浏览器端实时人脸 mesh 叠加
   useFaceMesh(videoRef, overlayRef, started, setFaceLocked);
 
-  // --- 清残留帧（回到 Presenting 时重置状态） ---
+  // Soniox 实时语音转写（实时字幕）
+  const soniox = useSoniox();
+
+  // --- 重置 ---
   useEffect(() => {
     endRef.current = false;
     setStarted(false);
     setSeconds(60);
+    setTotal(60);
   }, []);
 
   // --- 点击 "开始" ---
   async function handleStart() {
     if (started) return;
     setStarted(true);
-
-    // 1. 开摄像头预览
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 480 } },
@@ -46,12 +51,9 @@ function Presenting() {
     } catch {
       // 摄像头不可用也可以继续
     }
-
-    // 2. 通知后端开始录音 + 发帧准备
     await fetch('/api/step/presenting/start', { method: 'POST' });
-
-    // 3. 开始发帧
     startFrameCapture();
+    soniox.start(); // 开始实时语音转写
   }
 
   // --- 发帧 ---
@@ -78,188 +80,265 @@ function Presenting() {
     }, FRAME_INTERVAL_MS);
   }
 
-  // --- 本地倒计时（从 start 后才开始） ---
+  // --- 本地倒计时 ---
   useEffect(() => {
     if (!started || endRef.current) return;
     const timer = setInterval(() => {
-      setSeconds((prev) => {
-        if (prev <= 1) {
-          // 倒计时结束，不在这里调 endPresentation（避免 setState 内副作用）
-          return 0;
-        }
-        return prev - 1;
-      });
+      setSeconds((prev) => (prev <= 1 ? 0 : prev - 1));
     }, 1000);
     return () => clearInterval(timer);
   }, [started]);
 
-  // 倒计时归零时触发结束
   useEffect(() => {
-    if (started && seconds <= 0 && !endRef.current) {
-      endPresentation();
-    }
+    if (started && seconds <= 0 && !endRef.current) endPresentation();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [started, seconds]);
 
   // --- 结束路演 ---
-  function endPresentation() {
+  async function endPresentation() {
     if (endRef.current) return;
     endRef.current = true;
-
-    // 停帧发送
     if (frameTimerRef.current) {
       clearInterval(frameTimerRef.current);
       frameTimerRef.current = 0;
     }
-
-    // 停摄像头
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
 
-    // 通知后端结束
-    fetch('/api/step/presenting/end', { method: 'POST' })
-      .then(() => {
-        // 后端返回后强制跳转到 thinking（不等 SSE，防止丢事件）
-        useBoothStore.getState().updateFromSSE({
-          step: 'thinking',
-          countdown: 0,
-          data: {},
-        });
-      })
-      .catch(() => {
-        // 即使后端报错也跳转
-        useBoothStore.getState().updateFromSSE({
-          step: 'thinking',
-          countdown: 0,
-          data: {},
-        });
+    // 停止 Soniox，拿到最终转写 + 词级 token，先发给后端（end 触发分析前必须就位）
+    const { text, tokens } = soniox.stop();
+    try {
+      await fetch('/api/step/presenting/transcript', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, tokens }),
       });
+    } catch {
+      /* 转写发送失败也继续 */
+    }
+
+    try {
+      await fetch('/api/step/presenting/end', { method: 'POST' });
+    } catch {
+      /* ignore */
+    }
+    useBoothStore.getState().updateFromSSE({ step: 'thinking', countdown: 0, data: {} });
   }
 
-  // --- 未开始：显示 Start 按钮 ---
+  const low = seconds <= 6;
+  const progress = total > 0 ? (seconds / total) * 100 : 0;
+  const captionFinal =
+    soniox.finalText.length > 64 ? '…' + soniox.finalText.slice(-64) : soniox.finalText;
+
+  // =====================================================================
+  // 未开始：评审席待命
+  // =====================================================================
   if (!started) {
     return (
-      <motion.div
-        className="flex flex-col items-center justify-center w-full h-full px-8"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.5 }}
-      >
-        <motion.h2
-          className="text-white font-bold text-center mb-6"
-          style={{ fontSize: 'clamp(28px, 4vw, 48px)' }}
-          initial={{ y: -20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.2, duration: 0.5 }}
-        >
-          Ready to Present
-        </motion.h2>
+      <div className="chamber w-full h-full relative flex items-center justify-center px-[6vw]">
+        <div className="grain" />
+        <Header session={sessionRef.current} live={false} />
 
-        <motion.p
-          className="text-gray-400 text-center max-w-xl mb-12"
-          style={{ fontSize: 'clamp(16px, 2vw, 24px)' }}
+        <motion.div
+          className="grid grid-cols-1 md:grid-cols-[0.82fr_1fr] gap-[4vw] items-center w-full max-w-[1180px] z-20"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ delay: 0.4, duration: 0.5 }}
+          transition={{ duration: 0.6 }}
         >
-          You have up to 60 seconds. Present your project, then we'll analyze it.
-        </motion.p>
+          <motion.div
+            className="h-[58vh] max-h-[560px]"
+            initial={{ opacity: 0, x: -24 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.15, duration: 0.6 }}
+          >
+            <MuskPresence active={false} neutralSrc={muskNeutral} skepticalSrc={muskSkeptical} />
+          </motion.div>
 
-        <motion.button
-          className="px-16 py-6 border-2 border-gray-400 text-gray-200 rounded-xl text-2xl md:text-3xl hover:border-white hover:text-white hover:bg-white/5 transition-colors duration-200 tracking-wider"
-          onClick={handleStart}
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.7, duration: 0.4 }}
-          whileHover={{ scale: 1.03 }}
-          whileTap={{ scale: 0.97 }}
-        >
-          Start
-        </motion.button>
-      </motion.div>
+          <div>
+            <motion.div
+              className="hud-label mb-5"
+              style={{ color: 'var(--signal)' }}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 }}
+            >
+              ▍评审席已就位
+            </motion.div>
+            <motion.h1
+              className="font-display text-[var(--ink)] leading-[0.92]"
+              style={{ fontSize: 'clamp(44px, 7vw, 104px)' }}
+              initial={{ opacity: 0, y: 24 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.4, duration: 0.6 }}
+            >
+              ELON 正在
+              <br />
+              <span className="glow-red" style={{ color: 'var(--signal)' }}>等你开口</span>
+            </motion.h1>
+            <motion.p
+              className="text-[var(--muted)] mt-6 max-w-md leading-relaxed"
+              style={{ fontSize: 'clamp(14px, 1.5vw, 19px)' }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.7 }}
+            >
+              限时路演。站到镜头前，用最少的话讲清你做了什么——
+              证明它值得他抬一下眼皮。
+            </motion.p>
+            <motion.button
+              onClick={handleStart}
+              className="group mt-10 inline-flex items-center gap-3 px-9 py-4 border border-[var(--signal)] text-[var(--signal)] font-hud tracking-[0.25em] uppercase text-sm hover:bg-[var(--signal)] hover:text-black transition-colors duration-200"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.9 }}
+              whileTap={{ scale: 0.97 }}
+            >
+              <span className="w-2 h-2 bg-[var(--signal)] group-hover:bg-black" />
+              开始路演
+            </motion.button>
+          </div>
+        </motion.div>
+      </div>
     );
   }
 
-  // --- 已开始：显示倒计时 + 摄像头 + End Early ---
+  // =====================================================================
+  // 进行中：审视台
+  // =====================================================================
   return (
     <motion.div
-      className="flex flex-col items-center justify-center w-full h-full px-8"
+      className="chamber w-full h-full relative flex flex-col px-[3vw] py-[2.4vh]"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.5 }}
     >
-      <motion.p
-        className="text-gray-500 mb-8 tracking-widest uppercase"
-        style={{ fontSize: 'clamp(14px, 1.5vw, 20px)' }}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.2 }}
-      >
-        Listening...
-      </motion.p>
+      <div className="grain" />
+      <Header session={sessionRef.current} live />
 
-      <div className="mb-8">
-        <Countdown seconds={seconds} />
-      </div>
+      <main className="flex-1 min-h-0 grid grid-cols-[36%_1fr] gap-[2.4vw] mt-[2vh] z-20">
+        {/* 左：马斯克在场 */}
+        <MuskPresence active neutralSrc={muskNeutral} skepticalSrc={muskSkeptical} />
 
-      <motion.p
-        className="text-gray-600 mb-12"
-        style={{ fontSize: 'clamp(14px, 1.5vw, 20px)' }}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.4 }}
-      >
-        seconds remaining
-      </motion.p>
+        {/* 右：被审视的你 */}
+        <div className="relative flex flex-col min-h-0">
+          <div className="flex items-end justify-between mb-3 shrink-0">
+            <div>
+              <div className="hud-label">Subject // 你</div>
+              <div className="font-display text-[var(--ink)] leading-none"
+                   style={{ fontSize: 'clamp(22px, 3vw, 46px)' }}>
+                UNDER&nbsp;REVIEW
+              </div>
+            </div>
+            <div className="text-right leading-none">
+              <div className="hud-label mb-1">剩余</div>
+              <div className={`font-display tabular-nums leading-none ${low ? 'glow-red' : ''}`}
+                   style={{ fontSize: 'clamp(54px, 8vw, 120px)', color: low ? 'var(--signal)' : 'var(--ink)' }}>
+                {seconds}
+              </div>
+            </div>
+          </div>
 
-      <motion.div
-        className="mb-12"
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ delay: 0.6, duration: 0.4 }}
-      >
-        <div className="relative aspect-[4/3] w-[44vw] max-w-[520px] bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
-          <video
-            ref={videoRef}
-            autoPlay
-            muted
-            playsInline
-            className="absolute inset-0 w-full h-full object-cover"
-          />
-          {/* 关键点 mesh 叠加层 */}
-          <canvas
-            ref={overlayRef}
-            className="absolute inset-0 w-full h-full pointer-events-none"
-          />
-          {/* 检测状态徽标 */}
-          <div className="absolute top-2 left-2 px-2 py-1 rounded text-xs font-mono flex items-center gap-1.5 bg-black/60">
-            <span
-              className={`inline-block w-2 h-2 rounded-full ${
-                faceLocked ? 'bg-green-400' : 'bg-red-500'
-              }`}
-            />
-            <span className={faceLocked ? 'text-green-300' : 'text-gray-400'}>
-              {faceLocked ? '已锁定面部 478 点' : '正在寻找面部…'}
-            </span>
+          {/* 摄像头取景器 */}
+          <div className="relative flex-1 min-h-0 rounded-md overflow-hidden border border-[var(--line)] bg-black">
+            <video ref={videoRef} autoPlay muted playsInline
+                   className="absolute inset-0 w-full h-full object-cover" />
+            <canvas ref={overlayRef}
+                    className="absolute inset-0 w-full h-full object-cover pointer-events-none z-[3]" />
+
+            {/* 取景角括号 */}
+            <span className="bracket tl z-10" />
+            <span className="bracket tr z-10" />
+            <span className="bracket bl z-10" />
+            <span className="bracket br z-10" />
+
+            {/* 中心准星 */}
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-[2]">
+              <div className="relative w-16 h-16 opacity-50">
+                <span className="absolute left-1/2 top-0 -translate-x-1/2 w-px h-4 bg-[var(--signal)]" />
+                <span className="absolute left-1/2 bottom-0 -translate-x-1/2 w-px h-4 bg-[var(--signal)]" />
+                <span className="absolute top-1/2 left-0 -translate-y-1/2 h-px w-4 bg-[var(--signal)]" />
+                <span className="absolute top-1/2 right-0 -translate-y-1/2 h-px w-4 bg-[var(--signal)]" />
+              </div>
+            </div>
+
+            {/* 顶部状态 */}
+            <div className="absolute top-3 left-3 z-10 flex items-center gap-2 px-2 py-1 bg-black/55 rounded">
+              <span className={`w-2 h-2 rounded-full ${faceLocked ? 'bg-[#39ff8b]' : 'bg-[var(--signal)] rec-dot'}`} />
+              <span className="hud-label" style={{ color: faceLocked ? '#39ff8b' : 'var(--signal)' }}>
+                {faceLocked ? 'FACE LOCK · 478 PTS' : 'ACQUIRING FACE…'}
+              </span>
+            </div>
+
+            {/* 底部遥测 */}
+            <div className="absolute bottom-3 left-3 z-10 hud-label">▸ ANALYZING SUBJECT</div>
+            <div className="absolute bottom-3 right-3 z-10 hud-label text-right">
+              SESS {sessionRef.current} · 5 FPS
+            </div>
+          </div>
+
+          {/* 实时字幕（Soniox） */}
+          <div className="mt-3 shrink-0 rounded-md border border-[var(--line)] bg-black/40 px-4 py-2.5 min-h-[64px]">
+            <div className="hud-label mb-1 flex items-center gap-2">
+              <span className={`w-1.5 h-1.5 rounded-full ${soniox.active ? 'bg-[#39ff8b] rec-dot' : 'bg-[var(--hud)]'}`} />
+              Live Transcript · 实时识别
+            </div>
+            <div className="font-hud leading-snug" style={{ fontSize: 'clamp(13px, 1.2vw, 16px)' }}>
+              {captionFinal || soniox.interimText ? (
+                <span className="text-[var(--ink)]">
+                  {captionFinal}
+                  <span className="text-[var(--muted)]">{soniox.interimText}</span>
+                </span>
+              ) : (
+                <span className="text-[var(--muted)]">
+                  {soniox.error ? `识别异常：${soniox.error}` : '开始说话，马斯克在听…'}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* 时间进度条 */}
+          <div className="h-[3px] mt-3 bg-white/8 overflow-hidden rounded-full shrink-0">
+            <div className="h-full rounded-full transition-[width] duration-1000 ease-linear"
+                 style={{ width: `${progress}%`, background: low ? 'var(--signal)' : 'var(--hud)' }} />
           </div>
         </div>
-        <p className="text-gray-600 text-center mt-2 text-sm">
-          camera preview · 实时面部识别
-        </p>
-      </motion.div>
+      </main>
 
-      <motion.button
-        className="px-10 py-4 border-2 border-gray-600 text-gray-300 rounded-lg text-xl md:text-2xl hover:border-red-500 hover:text-red-400 hover:bg-red-500/10 transition-colors duration-200"
-        onClick={endPresentation}
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.8, duration: 0.4 }}
-      >
-        End Early
-      </motion.button>
+      {/* 底栏 */}
+      <footer className="flex items-center justify-between mt-[1.8vh] z-20 shrink-0">
+        <div className="hud-label">他在听 · 说重点</div>
+        <button
+          onClick={endPresentation}
+          className="inline-flex items-center gap-2 px-6 py-2.5 border border-white/15 text-[var(--muted)] font-hud tracking-[0.22em] uppercase text-xs hover:border-[var(--signal)] hover:text-[var(--signal)] transition-colors duration-200"
+        >
+          结束路演 ▸
+        </button>
+      </footer>
     </motion.div>
+  );
+}
+
+/* 顶部 HUD 条 */
+function Header({ session, live }: { session: string; live: boolean }) {
+  return (
+    <header className="absolute top-[2.4vh] left-[3vw] right-[3vw] flex items-center justify-between z-30">
+      <div className="flex items-center gap-3">
+        <span className="font-display text-2xl leading-none">
+          <span style={{ color: 'var(--signal)' }}>X</span>
+          <span className="text-[var(--ink)]">.AI</span>
+        </span>
+        <span className="hud-label hidden sm:inline">Temporary Review Booth</span>
+      </div>
+      <div className="flex items-center gap-5">
+        <span className="hud-label">SESSION&nbsp;#{session}</span>
+        <span className="hud-label flex items-center gap-1.5" style={{ color: live ? 'var(--signal)' : 'var(--hud)' }}>
+          <span className={`w-2 h-2 rounded-full ${live ? 'bg-[var(--signal)] rec-dot' : 'bg-[var(--hud)]'}`} />
+          {live ? 'REC' : 'STANDBY'}
+        </span>
+      </div>
+    </header>
   );
 }
 

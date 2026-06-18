@@ -40,7 +40,9 @@ async def compose_photo(
     camera_best_photo_path: str | None = None,
     review: dict | None = None,
     qr_path: str | None = None,
-    output_dir: str = "D:/hks/backend/data/photos",
+    output_dir: str = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "data", "photos"),
 ) -> str:
     """合成合影。"""
     print_step("PHOTO", "=== 合影合成 ===")
@@ -113,6 +115,8 @@ async def compose_photo(
 
     # 6. 照片区（带霓虹边框）
     px1, py1, px2, py2 = PHOTO_BOX
+    tw = px2 - px1   # 照片框宽高（与是否有照片无关，提前算好供两个分支使用）
+    th = py2 - py1
     photo_bg_rect = [px1 - 4, py1 - 4, px2 + 4, py2 + 4]
     draw.rounded_rectangle(photo_bg_rect, radius=12, fill=(10, 15, 35),
                           outline=NEON_PURPLE, width=2)
@@ -123,8 +127,6 @@ async def compose_photo(
         try:
             photo = Image.open(camera_best_photo_path).convert("RGB")
             pw, ph = photo.size
-            tw = px2 - px1
-            th = py2 - py1
             scale = max(tw / pw, th / ph)
             nw = int(pw * scale)
             nh = int(ph * scale)

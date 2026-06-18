@@ -56,8 +56,10 @@ export function useFaceMesh(
       const canvas = canvasRef.current;
       if (!video || !canvas || !landmarker || !video.videoWidth) return;
 
-      const w = video.clientWidth;
-      const h = video.clientHeight;
+      // 用摄像头原生分辨率作 canvas 内部尺寸；canvas 再用和 video 相同的
+      // object-cover 显示，两者裁剪一致 → 关键点与人脸自动对齐。
+      const w = video.videoWidth;
+      const h = video.videoHeight;
       if (w === 0 || h === 0) return;
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;

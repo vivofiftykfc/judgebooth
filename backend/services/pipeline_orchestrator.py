@@ -156,6 +156,16 @@ class PipelineOrchestrator:
             print_step("ORCH", f"=== 三管线全部完成，总耗时 {total:.1f}s ===")
             print_data("ORCH", "合并错误", self.session.error)
 
+            # 生成马斯克朗读音频（评审就绪后，进 reviewing 前；失败不阻断）
+            if self.session.review:
+                try:
+                    from pipelines.tts.tts_engine import synthesize_musk_speech
+                    audio_path = await synthesize_musk_speech(self.session.review)
+                    self.session.review_audio_path = audio_path
+                    print_data("ORCH", "朗读音频", audio_path)
+                except Exception as exc:
+                    print_error("ORCH", f"朗读合成异常（降级，不阻断）: {exc}")
+
             # 自动推进到 reviewing（Thinking 页面会自动因为 SSE 跳转）
             print_step("ORCH", "自动推进: thinking → reviewing")
             self.session.step = "reviewing"

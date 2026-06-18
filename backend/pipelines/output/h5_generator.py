@@ -16,7 +16,9 @@ from debug_utils import print_debug, print_step, print_data, print_error, print_
 
 logger = logging.getLogger(__name__)
 
-H5_OUTPUT_DIR = "D:/hks/backend/data/h5"
+H5_OUTPUT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "h5")
 
 
 async def generate_h5(

@@ -2,13 +2,160 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --bg: #060507;
+  --bg-2: #0c0a0d;
+  --signal: #ff2b2b;          /* X 红 */
+  --signal-soft: #ff6a4d;
+  --signal-dim: rgba(255, 43, 43, 0.16);
+  --ink: #ece9e3;
+  --muted: #7c7872;
+  --hud: #9a958c;
+  --line: rgba(255, 255, 255, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   overflow: hidden;
   font-family: 'JetBrains Mono', monospace;
+  background: var(--bg);
+  color: var(--ink);
 }
 
 #root {
   width: 100vw;
   height: 100vh;
+}
+
+/* ---------- 字体角色 ---------- */
+.font-display {
+  font-family: 'Anton', sans-serif;
+  letter-spacing: 0.01em;
+  font-weight: 400;
+}
+.font-hud {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ---------- 控制台氛围层（颗粒 / 扫描线 / 暗角 / 微闪） ---------- */
+.chamber {
+  position: relative;
+  background:
+    radial-gradient(120% 90% at 28% 18%, rgba(255, 43, 43, 0.06), transparent 55%),
+    radial-gradient(100% 100% at 80% 100%, rgba(40, 50, 70, 0.10), transparent 60%),
+    var(--bg);
+}
+/* 暗角（调柔） */
+.chamber::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(120% 120% at 50% 45%, transparent 64%, rgba(0, 0, 0, 0.55) 100%);
+  z-index: 40;
+}
+/* 扫描线（调淡 + 静止，去掉闪烁的躁动） */
+.chamber::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 41;
+  opacity: 0.22;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.02) 0 1px, transparent 1px 4px);
+  mix-blend-mode: overlay;
+}
+
+/* 颗粒噪点（独立元素叠加） */
+.grain {
+  position: absolute;
+  inset: -50%;
+  pointer-events: none;
+  z-index: 42;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  animation: grain-shift 1s steps(3) infinite;
+}
+@keyframes grain-shift {
+  0% { transform: translate(0, 0); }
+  33% { transform: translate(-3%, 2%); }
+  66% { transform: translate(2%, -2%); }
+  100% { transform: translate(0, 0); }
+}
+
+/* ---------- HUD 元件 ---------- */
+.hud-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--hud);
+}
+
+/* 角括号取景框 */
+.bracket {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(255, 43, 43, 0.7);
+}
+.bracket.tl { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.bracket.tr { top: -1px; right: -1px; border-left: 0; border-bottom: 0; }
+.bracket.bl { bottom: -1px; left: -1px; border-right: 0; border-top: 0; }
+.bracket.br { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+
+/* 监视扫描条（从上往下扫过被观测主体，调淡调慢） */
+.scanbar {
+  position: absolute;
+  left: 0; right: 0; height: 14%;
+  background: linear-gradient(180deg, transparent, rgba(255, 43, 43, 0.10), transparent);
+  animation: scanbar-move 6s linear infinite;
+  pointer-events: none;
+  z-index: 5;
+}
+@keyframes scanbar-move {
+  0% { top: -14%; }
+  100% { top: 100%; }
+}
+
+/* 评审在场呼吸光环 */
+.watch-ring {
+  animation: watch-pulse 2.8s ease-in-out infinite;
+}
+@keyframes watch-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50% { opacity: 0.9; transform: scale(1.015); }
+}
+
+/* REC 闪点（放慢，不那么躁） */
+.rec-dot { animation: rec-blink 1.8s steps(2) infinite; }
+@keyframes rec-blink { 0%, 60% { opacity: 1; } 61%, 100% { opacity: 0.3; } }
+
+.glow-red { text-shadow: 0 0 9px rgba(255, 43, 43, 0.38); }
+
+/* 插话进场 */
+.interject-in {
+  animation: interject 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes interject {
+  0% { opacity: 0; transform: translateX(-10px) skewX(-6deg); filter: blur(4px); }
+  60% { transform: translateX(0) skewX(0); filter: blur(0); }
+  100% { opacity: 1; }
+}
+
+/* 占位头像眨眼/呼吸 */
+.blink { animation: eye-blink 5.5s infinite; transform-origin: center; }
+@keyframes eye-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  94%, 98% { transform: scaleY(0.08); }
+}
+.breathe { animation: breathe 6s ease-in-out infinite; }
+@keyframes breathe {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
 }

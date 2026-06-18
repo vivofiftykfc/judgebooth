@@ -7,7 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
-from config import AUDIO_DURATION, CAMERA_INDEX
+from config import (
+    AUDIO_DURATION,
+    CAMERA_INDEX,
+    SONIOX_API_KEY,
+    SONIOX_TEMP_KEY_URL,
+    SONIOX_ENABLED,
+)
 from models.session import BoothSession
 from services.pipeline_orchestrator import PipelineOrchestrator
 from debug_utils import print_debug, print_step, print_data, print_error
@@ -112,6 +118,38 @@ async def health():
 
 
 # ---------------------------------------------------------------------------
+# Soniox 临时密钥（前端用它建立 WebSocket，真 key 不暴露给浏览器）
+# ---------------------------------------------------------------------------
+@app.post("/api/soniox/temp-key")
+async def soniox_temp_key():
+    """用后端的 SONIOX_API_KEY 换一个 60s 临时 key 返给前端。"""
+    if not SONIOX_ENABLED:
+        raise HTTPException(status_code=503, detail="SONIOX_API_KEY 未配置")
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                SONIOX_TEMP_KEY_URL,
+                headers={"Authorization": f"Bearer {SONIOX_API_KEY}"},
+                json={"usage_type": "transcribe_websocket", "expires_in_seconds": 60},
+            )
+        if resp.status_code >= 300:
+            print_error("SONIOX", f"临时 key 获取失败: {resp.status_code} {resp.text[:200]}")
+            raise HTTPException(status_code=502, detail="Soniox 临时密钥获取失败")
+        data = resp.json()
+        # 兼容字段名：api_key
+        api_key = data.get("api_key") or data.get("apiKey")
+        print_debug("SONIOX", "已签发临时 key")
+        return {"apiKey": api_key, "expiresAt": data.get("expires_at")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print_error("SONIOX", f"临时 key 异常: {e}")
+        raise HTTPException(status_code=502, detail=f"Soniox 临时密钥异常: {e}")
+
+
+# ---------------------------------------------------------------------------
 # SSE stream
 # ---------------------------------------------------------------------------
 @app.get("/api/stream")
@@ -178,9 +216,11 @@ async def step_welcome():
     session.countdown = 10
     session.audio_path = None
     session.transcript = None
+    session.transcript_segments = None
     session.fluency_report = None
     session.emotion_report = None
     session.review = None
+    session.review_audio_path = None
     session.photo_path = None
     session.qr_path = None
     session.error = None
@@ -213,6 +253,38 @@ async def step_presenting_frame(request: Request):
         return {"status": "error", "reason": str(e)}
 
 
+@app.post("/api/step/presenting/transcript")
+async def step_presenting_transcript(request: Request):
+    """接收前端 Soniox 实时转写的最终文本 + 词级 token，存入 session。
+
+    body: {"text": str, "tokens": [{"text","start_ms","end_ms","is_final"}, ...]}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    text = (body.get("text") or "").strip()
+    tokens = body.get("tokens") or []
+
+    # 词级 token → fluency_analyzer 用的 segments（start/end 单位：秒）
+    segments = []
+    for t in tokens:
+        s = t.get("start_ms")
+        e = t.get("end_ms")
+        segments.append({
+            "text": t.get("text", ""),
+            "start": (s / 1000.0) if s is not None else 0.0,
+            "end": (e / 1000.0) if e is not None else 0.0,
+            "confidence": 1.0,
+        })
+
+    session.transcript = text
+    session.transcript_segments = segments
+    print_data("MAIN", "前端 Soniox 转写文本", text)
+    print_debug("MAIN", f"收到 Soniox 转写: {len(text)} 字, {len(tokens)} tokens")
+    return {"status": "ok", "len": len(text), "tokens": len(tokens)}
+
+
 @app.post("/api/step/presenting/start")
 async def step_presenting_start():
     """Start 120 s recording (audio + video pipelines)."""
@@ -223,8 +295,10 @@ async def step_presenting_start():
     print_debug("MAIN", f"开始录制，倒计时={AUDIO_DURATION}s")
     await broadcast_state()
 
-    # Start recording in background
-    asyncio.create_task(orchestrator.start_recording())
+    # 语音由前端 Soniox 实时转写（不再用后端 pyaudio 录音）。
+    # 仅当 Soniox 未配置时，留作离线兜底由音频管线在分析阶段自行录制。
+    if not SONIOX_ENABLED:
+        asyncio.create_task(orchestrator.start_recording())
 
     # Auto-end（保存引用，welcome 或 end 时取消）
     async def _auto_end():
@@ -246,7 +320,11 @@ async def step_presenting_end():
     """Stop recording, enter thinking state, start 3-pipeline analysis."""
     global _auto_end_task
     print_step("MAIN", "=== Step: presenting/end ===")
-    _require_step("presenting")
+
+    # 如果已经是 thinking（自动结束已触发），直接返回成功
+    if session.step != "presenting":
+        print_debug("MAIN", f"step 已经是 {session.step}，跳过（可能自动结束已触发）")
+        return {"status": "ok", "step": session.step}
     session.step = "thinking"
     session.countdown = 0
 

@@ -4,40 +4,40 @@
 
 ---
 
-## 快速开始
+## 快速开始（空白电脑）
 
-### 环境要求
-- Python 3.10+, Node.js 18+, Windows（音视频硬件）
-- 摄像头 + 麦克风
+### 1️⃣ 安装基础环境
 
-### 后端
+| 软件 | 下载地址 |
+|------|---------|
+| Python 3.10+ | https://www.python.org/downloads/ |
+| Node.js 18+ | https://nodejs.org/ |
 
-```bash
-cd backend
-pip install fastapi uvicorn sse_starlette pyaudio faster-whisper edge-tts
-pip install mediapipe httpx qrcode[pil] pillow
+### 2️⃣ 解压项目
 
-set LLM_API_KEY=your-deepseek-key
-set IMG_GEN_API_KEY=your-wavespeedai-key
+```
+将 JudgeBooth.rar 解压到 D:\hks\
+```
+
+### 3️⃣ 双击 `setup.bat`
+
+自动安装后端和前端依赖，全程无需操作。
+
+### 4️⃣ 启动
+
+**先启动后端** — 双击 `start.bat`，在 CMD 里依次运行：
+
+```cmd
+cd D:\hks\backend
+set LLM_API_KEY=sk-6e863dcd99a94c63a7065c43cadc4cbe
+set IMG_GEN_API_KEY=sk-ws-H.RPDDHXY.Ehye.MEQCIGk-DahELdHB-K0iHJOepNfDDRLQw0XOSXI6l6yCcUTLAiAsQhljMlEm2n69bMne45LcBAB7_oz2R52nsjEA0TOVWQ
 set KMP_DUPLICATE_LIB_OK=TRUE
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-### 前端
+**再启动前端** — 双击 `start-frontend.bat`
 
-```bash
-cd frontend
-npm install
-npm run dev
-# 浏览器 http://localhost:5173
-```
-
-### AI 生图需要 ngrok（可选）
-
-```bash
-D:\ngrok\ngrok.exe http 8000
-set PUBLIC_HOST=https://xxx.ngrok-free.dev
-```
+浏览器打开 **http://localhost:5173**
 
 ---
 
@@ -45,11 +45,47 @@ set PUBLIC_HOST=https://xxx.ngrok-free.dev
 
 | 页面 | 操作 |
 |------|------|
-| Welcome | 自动连接，10s 倒计时 |
-| Presenting | 点 **Start** → 路演（最多 60s）→ **End Early** |
+| Welcome | 3.5s 开场动画 → 自动跳转 |
+| Presenting | 点 **开始路演** → 对着摄像头讲（最多 60s）→ **结束路演** |
 | Thinking | 三管线分析中（自动跳转） |
-| Reviewing | 展示马斯克评审卡片 → **Continue** |
-| PhotoOutput | Polaroid 合影 + 二维码 + H5 |
+| Reviewing | 展示马斯克评审卡片 → **Continue to Photo** |
+| PhotoOutput | Polaroid 合影 + 二维码 → **重新开始** |
+
+---
+
+## 环境变量
+
+| 变量 | 值 | 说明 |
+|------|-----|------|
+| `LLM_API_KEY` | `sk-6e863dcd99a94c63a7065c43cadc4cbe` | DeepSeek API（评审用） |
+| `IMG_GEN_API_KEY` | `sk-ws-H.RPDDHXY...` | 阿里云 Wan2.7-Image（换头用） |
+| `KMP_DUPLICATE_LIB_OK` | `TRUE` | 防止 Whisper 崩溃 |
+| `PUBLIC_HOST` | `http://localhost:8000` | AI 生图需要公网时改为 ngrok 地址 |
+
+---
+
+## 项目结构
+
+```
+hks/
+├── backend/          FastAPI 后端
+│   ├── main.py      HTTP + SSE + 5 步状态机
+│   ├── config.py    配置
+│   ├── models/      数据模型
+│   ├── pipelines/   管线（audio/video/llm/output/tts）
+│   └── services/    三管线调度
+├── frontend/         React 前端
+│   └── src/
+│       ├── pages/    5 个页面
+│       ├── components/  组件
+│       ├── stores/      Zustand
+│       └── hooks/       SSE + 人脸 Mesh
+├── docs/             文档
+├── patches/          补丁文件
+├── setup.bat         一键安装脚本
+├── start.bat         后端启动
+└── start-frontend.bat  前端启动
+```
 
 ---
 
@@ -58,32 +94,9 @@ set PUBLIC_HOST=https://xxx.ngrok-free.dev
 | 模块 | 技术 |
 |------|------|
 | 后端 | Python FastAPI + SSE |
-| 前端 | React 18 + Vite + TailwindCSS + Zustand |
+| 前端 | React 18 + Vite + TailwindCSS + Framer Motion + Zustand |
 | 语音转写 | faster-whisper（本地） |
-| 面部检测 | MediaPipe FaceLandmarker（478点+52 blendshapes） |
+| 面部检测 | MediaPipe FaceLandmarker（478 点 + 52 blendshapes） |
 | LLM 评审 | DeepSeek API |
-| TTS | Edge TTS |
-| AI 合影 | WaveSpeedAI InfiniteYou 换脸 / Pillow 降级 |
-
----
-
-## 环境变量
-
-| 变量 | 必须 | 说明 |
-|------|------|------|
-| `LLM_API_KEY` | ✅ | DeepSeek API Key |
-| `IMG_GEN_API_KEY` | ✅ | WaveSpeedAI API Key |
-| `PUBLIC_HOST` | ⚠️ | ngrok 地址（AI 生图需要） |
-| `KMP_DUPLICATE_LIB_OK` | ⚠️ | Whisper OMP 修复，设为 TRUE |
-
----
-
-## 项目结构
-
-```
-backend/     → Python FastAPI（models/pipelines/services）
-frontend/    → React（pages/components/stores/hooks）
-patches/     → 队友协作补丁
-```
-
-详见 `PROJECT_STRUCTURE.md`
+| AI 合影 | 阿里云 Wan2.7-Image（换头） / Pillow 降级 |
+| 调试 | debug_utils 统一日志（[STEP]/[DATA]/[ERROR]） |
