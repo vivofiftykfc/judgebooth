@@ -11,6 +11,11 @@ LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
 # Edge TTS
 EDGE_TTS_VOICE = "zh-CN-YunxiNeural"
 
+# Soniox 实时语音转写（浏览器端流式 + 实时字幕）
+SONIOX_API_KEY = os.getenv("SONIOX_API_KEY", "")
+SONIOX_TEMP_KEY_URL = "https://api.soniox.com/v1/auth/temporary-api-key"
+SONIOX_ENABLED = bool(SONIOX_API_KEY)
+
 # Camera
 CAMERA_INDEX = 0
 

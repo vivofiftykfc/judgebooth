@@ -26,6 +26,7 @@ class BoothSession:
     countdown: int = 0
     audio_path: str | None = None
     transcript: str | None = None
+    transcript_segments: list | None = None   # 前端 Soniox 词级 token 转成的 segments
     fluency_report: dict | None = None
     emotion_report: dict | None = None
     review: dict | None = None
@@ -46,6 +47,7 @@ class BoothSession:
                 "fluency": self.fluency_report,
                 "emotion": self.emotion_report,
                 "review": self.review,
+                "review_audio": _path_to_url(self.review_audio_path),
                 "photo": _path_to_url(self.photo_path),
                 "qr": _path_to_url(self.qr_path),
                 "error": self.error,

@@ -5,7 +5,11 @@ interface ReviewData {
   fluency?: {
     avg_wpm: number;
     pause_count: number;
+    longest_pause_seconds?: number;
     filler_word_count: number;
+    filler_examples?: string[];
+    stutter_count?: number;
+    wpm_volatility?: number;
     summary: string;
   };
   emotion?: {
@@ -13,6 +17,7 @@ interface ReviewData {
     smile_index: number;
     overall_emotion: string;
     gaze_at_camera_pct: number;
+    head_stability_score?: number;
     summary: string;
   };
   review?: {
@@ -22,6 +27,7 @@ interface ReviewData {
     suggestions: string[];
     closing: string;
   };
+  review_audio?: string;
   photo?: string;
   qr?: string;
   error?: string;
